@@ -8,7 +8,7 @@ use super::*;
 
 #[test]
 fn contract_version_starts_at_one_zero() {
-    assert_eq!(CONTRACT_VERSION, (1, 0));
+    assert_eq!(CONTRACT_VERSION, (2, 0));
 }
 
 #[test]
