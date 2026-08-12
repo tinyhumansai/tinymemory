@@ -1,6 +1,6 @@
 [workspace]
-members = [".", "api", "core", "adapters/tinycortex"]
-default-members = [".", "api", "core", "adapters/tinycortex"]
+members = [".", "api", "core", "adapters/tinycortex", "adapters/remote"]
+default-members = [".", "api", "core", "adapters/tinycortex", "adapters/remote"]
 # `vendor/` holds engine submodules (tinycortex, tinybus, tinyagents), each of
 # which is its own workspace with its own lockfile. Same exclusion
 # `vendor/tinycortex` uses for its own nested vendor directory.
@@ -30,7 +30,7 @@ name = "tinymemory"
 # consumed by path and is not on crates.io, so `cargo package` cannot resolve
 # the graph. Every consumer takes this repo by path or git.
 publish = false
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 rust-version = "1.96"
 license = "MIT"

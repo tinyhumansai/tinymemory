@@ -1,0 +1,42 @@
+[package]
+name = "tinymemory-remote"
+publish = false
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+description = "HTTP adapters for self-hosted Supermemory, Mem0, and Cognee"
+repository = "https://github.com/tinyhumansai/tinymemory"
+
+[dependencies]
+# The engine-neutral contract and mandatory-family composition.
+tinymemory = { path = "../.." }
+tinymemory-api = { path = "../../api" }
+# Memory is an object-safe async trait and each native HTTP dialect is async.
+async-trait = "0.1"
+# The storage trait deliberately uses opaque backend errors.
+anyhow = "1"
+# Native self-hosted APIs are HTTP/JSON; multipart is required by Cognee.
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+# Remote records are translated through a private, lossless envelope.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Supermemory custom ids are bounded, so namespace/key identities use SHA-256.
+sha2 = "0.10"
+
+[dev-dependencies]
+# Adapter tests run lightweight native-API doubles over a real TCP transport.
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+missing_errors_doc = "warn"

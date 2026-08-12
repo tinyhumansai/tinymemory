@@ -45,14 +45,14 @@ fn an_empty_driver_id_is_refused_and_names_the_config_section() {
 }
 
 #[test]
-fn an_unknown_id_without_an_entry_is_refused_rather_than_guessed() {
+fn an_external_builtin_without_an_entry_is_refused_for_missing_configuration() {
     let refusal = DriverRegistry::builtin()
         .admit("supermemory", None, labels())
-        .expect_err("an unknown id without an entry is refused");
+        .expect_err("an external id without an entry is refused");
     assert_eq!(refusal.configured_driver, "supermemory");
     assert!(
-        refusal.reason.contains("unknown driver id \"supermemory\""),
-        "reason should name the id: {}",
+        refusal.reason.contains("external drivers require endpoint"),
+        "reason should name the missing external configuration: {}",
         refusal.reason
     );
     assert!(
@@ -65,8 +65,8 @@ fn an_unknown_id_without_an_entry_is_refused_rather_than_guessed() {
 }
 
 #[test]
-fn an_unknown_id_with_a_classless_entry_is_refused() {
-    let refusal = DriverRegistry::builtin()
+fn an_unreserved_id_with_a_classless_entry_is_refused() {
+    let refusal = DriverRegistry::empty()
         .admit("supermemory", Some(entry(None, TRUSTED)), labels())
         .expect_err("a classless entry cannot admit an arbitrary id");
     assert!(
@@ -166,35 +166,39 @@ fn an_untrusted_external_driver_is_refused_for_trust() {
     );
 }
 
-/// A trusted external driver is still refused, but for a *different* reason —
-/// so the trust test above cannot pass for the wrong reason.
 #[test]
-fn a_trusted_external_driver_is_refused_for_transport_not_trust() {
-    let refusal = DriverRegistry::builtin()
+fn a_trusted_external_driver_is_admitted() {
+    let admitted = DriverRegistry::builtin()
         .admit("remote", Some(entry(Some("external"), TRUSTED)), labels())
-        .expect_err("external transport does not exist yet");
-    assert!(
-        refusal.reason.contains("transport is not implemented yet"),
-        "reason should be the transport refusal: {}",
-        refusal.reason
-    );
-    assert!(
-        !refusal.reason.contains("untrusted"),
-        "the transport refusal must be distinct from the trust refusal: {}",
-        refusal.reason
-    );
+        .expect("the HTTP transport exists");
+    assert_eq!(admitted.class, DriverClass::External);
+}
+
+#[test]
+fn supported_external_ids_have_a_fixed_class() {
+    let registry = DriverRegistry::builtin();
+    for id in [SUPERMEMORY_DRIVER_ID, MEM0_DRIVER_ID, COGNEE_DRIVER_ID] {
+        let admitted = registry
+            .admit(id, Some(entry(Some("external"), TRUSTED)), labels())
+            .expect("supported external driver admits");
+        assert_eq!(admitted.class, DriverClass::External);
+    }
 }
 
 #[test]
 fn a_host_can_reserve_an_additional_driver_id() {
-    let registry = DriverRegistry::builtin().with_reserved("mem0", DriverClass::Embedded);
+    let registry = DriverRegistry::builtin().with_reserved("custom-memory", DriverClass::Embedded);
     let admitted = registry
-        .admit("mem0", None, labels())
+        .admit("custom-memory", None, labels())
         .expect("a host-reserved id admits implicitly");
     assert_eq!(admitted.class, DriverClass::Embedded);
 
     let refusal = registry
-        .admit("mem0", Some(entry(Some("null"), TRUSTED)), labels())
+        .admit(
+            "custom-memory",
+            Some(entry(Some("null"), TRUSTED)),
+            labels(),
+        )
         .expect_err("the confirm-never-override rule applies to host-reserved ids too");
     assert!(refusal.reason.contains("is built in and is always class"));
 }

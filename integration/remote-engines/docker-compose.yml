@@ -1,0 +1,101 @@
+name: tinymemory-remote-engines
+
+services:
+  supermemory:
+    profiles: [supermemory]
+    build:
+      context: .
+      dockerfile: supermemory.Dockerfile
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-local-superrag-only}
+      SUPERMEMORY_DATA_DIR: /data
+      PORT: 6767
+    ports: ["6767:6767"]
+    volumes: ["supermemory-data:/data"]
+
+  mem0:
+    profiles: [mem0]
+    build:
+      context: https://github.com/mem0ai/mem0.git#d70cc00ab39ee09ddcd982581d24d6c435d4fc09:server
+      dockerfile_inline: |
+        FROM python:3.12-slim
+        WORKDIR /app
+        COPY requirements.txt .
+        RUN pip install --no-cache-dir -r requirements.txt \
+            && pip install --no-cache-dir "psycopg[binary]>=3.2,<4"
+        RUN mkdir -p /app/history
+        COPY . .
+        EXPOSE 8000
+    command: sh -c "alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port 8000"
+    environment:
+      AUTH_DISABLED: "true"
+      JWT_SECRET: tinymemory-live-test-only
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-tinymemory-test}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://mock-inference:8080/v1}
+      POSTGRES_HOST: postgres
+      POSTGRES_PASSWORD: tinymemory
+      POSTGRES_DB: mem0_app
+      APP_DB_NAME: mem0_app
+      MEM0_TELEMETRY: "false"
+    ports: ["8888:8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mock-inference:
+        condition: service_healthy
+
+  postgres:
+    profiles: [mem0]
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: tinymemory
+      POSTGRES_DB: mem0_app
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes: ["mem0-postgres:/var/lib/postgresql/data"]
+
+  cognee:
+    profiles: [cognee]
+    build:
+      context: https://github.com/topoteretes/cognee.git#4b9dd362625dfd3621c344e571a86f5bc7a55ee8
+      dockerfile: Dockerfile
+    environment:
+      LLM_API_KEY: ${OPENAI_API_KEY:-tinymemory-test}
+      LLM_PROVIDER: openai
+      LLM_MODEL: openai/gpt-5-mini
+      LLM_ENDPOINT: ${OPENAI_BASE_URL:-http://mock-inference:8080/v1}
+      EMBEDDING_PROVIDER: openai
+      EMBEDDING_MODEL: openai/text-embedding-3-small
+      EMBEDDING_ENDPOINT: ${OPENAI_BASE_URL:-http://mock-inference:8080/v1}
+      EMBEDDING_API_KEY: ${OPENAI_API_KEY:-tinymemory-test}
+      EMBEDDING_DIMENSIONS: 1536
+      GRAPH_DATABASE_PROVIDER: turso
+      GRAPH_DATABASE_URL: /app/.cognee_system/graph.sqlite
+      ENABLE_BACKEND_ACCESS_CONTROL: "false"
+      REQUIRE_AUTHENTICATION: "false"
+      TELEMETRY_DISABLED: "true"
+    ports: ["8001:8000"]
+    volumes: ["cognee-data:/app/.cognee_system"]
+    depends_on:
+      mock-inference:
+        condition: service_healthy
+
+  mock-inference:
+    profiles: [mem0, cognee]
+    build:
+      context: .
+      dockerfile: mock-inference.Dockerfile
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
+
+volumes:
+  supermemory-data:
+  mem0-postgres:
+  cognee-data:

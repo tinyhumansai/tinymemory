@@ -22,7 +22,8 @@ src/
 └── mandatory/          the three mandatory capability families, composed once
                         over the `Memory` storage trait
 adapters/
-└── tinycortex/         the TinyCortex engine seen through the contract
+├── tinycortex/         the TinyCortex engine seen through the contract
+└── remote/             native HTTP dialects for Supermemory, Mem0, and Cognee
 vendor/
 ├── tinycortex/         the engine, pinned as a submodule
 └── tinybus/            pinned TinyBus submodule
@@ -68,6 +69,25 @@ that skips enforcement is the entire reason the policy layer exists.
 3. Implement any optional families over the engine's own entry points, and
    widen `capabilities()` in lockstep with the accessors.
 4. Reserve the driver id: `DriverRegistry::builtin().with_reserved("my-engine", DriverClass::Embedded)`.
+
+## Remote engines
+
+The `tinymemory-remote` crate supports the self-hosted native APIs of
+Supermemory, Mem0, and Cognee. Each adapter stores TinyMemory's key, category,
+session, and provenance in backend metadata (or a Cognee raw-data envelope), so
+exact CRUD and portability survive the seam while recall remains engine-native.
+
+```rust
+use tinymemory_remote::{SupermemoryMemory, supermemory_provider};
+
+let memory = SupermemoryMemory::new("http://localhost:6767", Some("sm_..."))?;
+let provider = supermemory_provider(memory);
+# Ok::<_, anyhow::Error>(provider)
+```
+
+All three advertise the mandatory Core, Recall, and Portability families. The
+live Docker harness and conformance command are documented in
+[`integration/remote-engines/`](integration/remote-engines/README.md).
 
 ## Development
 

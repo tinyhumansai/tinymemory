@@ -59,6 +59,15 @@ pub use tinymemory_api::null::NULL_DRIVER_ID;
 /// still refuse to bind something *else* under this name.
 pub const TINYCORTEX_DRIVER_ID: &str = "tinycortex";
 
+/// Driver id of the native Supermemory HTTP adapter.
+pub const SUPERMEMORY_DRIVER_ID: &str = "supermemory";
+
+/// Driver id of the native Mem0 HTTP adapter.
+pub const MEM0_DRIVER_ID: &str = "mem0";
+
+/// Driver id of the native Cognee HTTP adapter.
+pub const COGNEE_DRIVER_ID: &str = "cognee";
+
 /// The trust state a driver entry must carry for an external class to bind.
 pub const TRUSTED: &str = "trusted";
 
@@ -148,12 +157,16 @@ impl Default for DriverRegistry {
 }
 
 impl DriverRegistry {
-    /// The registry every host starts from: `null` and `tinycortex`.
+    /// The registry every host starts from: the null placeholder, TinyCortex,
+    /// and the three supported native HTTP engines.
     #[must_use]
     pub fn builtin() -> Self {
         let mut reserved = BTreeMap::new();
         reserved.insert(NULL_DRIVER_ID.to_string(), DriverClass::Null);
         reserved.insert(TINYCORTEX_DRIVER_ID.to_string(), DriverClass::Embedded);
+        reserved.insert(SUPERMEMORY_DRIVER_ID.to_string(), DriverClass::External);
+        reserved.insert(MEM0_DRIVER_ID.to_string(), DriverClass::External);
+        reserved.insert(COGNEE_DRIVER_ID.to_string(), DriverClass::External);
         Self { reserved }
     }
 
@@ -217,6 +230,12 @@ impl DriverRegistry {
         // host's own config blocks. But only a reserved id is admitted
         // implicitly — see the module docs.
         let Some(entry) = entry else {
+            if self.reserved_class(id) == Some(DriverClass::External) {
+                return Err(refuse(&format!(
+                    "no {} entry; external drivers require endpoint, credential, and trust configuration",
+                    labels.driver_entry
+                )));
+            }
             return self.implicit(id, &refuse, &format!("no {} entry", labels.driver_entry));
         };
 
@@ -260,11 +279,6 @@ impl DriverRegistry {
                     labels.drivers
                 )));
             }
-            // A distinct reason string from the trust refusal above, so a test
-            // for the trust rule cannot pass for the wrong reason.
-            return Err(refuse(
-                "external driver transport is not implemented yet (the http adapter lands in M4)",
-            ));
         }
 
         Ok(admission)
