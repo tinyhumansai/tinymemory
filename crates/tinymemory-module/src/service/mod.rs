@@ -313,6 +313,38 @@ impl MemoryService {
             .map_err(|error| into_bus_error(&error))
     }
 
+    async fn list_documents(&self, namespace: Option<String>) -> BusResult<serde_json::Value> {
+        require_family!(self, as_documents, Capability::Documents)
+            .list_documents(namespace.as_deref())
+            .await
+            .map_err(|error| into_bus_error(&error))
+    }
+
+    async fn list_namespaces(&self) -> BusResult<Vec<String>> {
+        require_family!(self, as_documents, Capability::Documents)
+            .list_namespaces()
+            .await
+            .map_err(|error| into_bus_error(&error))
+    }
+
+    async fn delete_document(
+        &self,
+        namespace: String,
+        document_id: String,
+    ) -> BusResult<serde_json::Value> {
+        require_family!(self, as_documents, Capability::Documents)
+            .delete_document(&namespace, &document_id)
+            .await
+            .map_err(|error| into_bus_error(&error))
+    }
+
+    async fn clear_namespace(&self, namespace: String) -> BusResult<()> {
+        require_family!(self, as_documents, Capability::Documents)
+            .clear_namespace(&namespace)
+            .await
+            .map_err(|error| into_bus_error(&error))
+    }
+
     async fn query_documents(
         &self,
         namespace: String,
@@ -422,6 +454,13 @@ impl MemoryService {
     ) -> BusResult<()> {
         require_family!(self, as_graph, Capability::Graph)
             .kv_put(namespace.as_deref(), &key, value)
+            .await
+            .map_err(|error| into_bus_error(&error))
+    }
+
+    async fn kv_delete(&self, namespace: Option<String>, key: String) -> BusResult<bool> {
+        require_family!(self, as_graph, Capability::Graph)
+            .kv_delete(namespace.as_deref(), &key)
             .await
             .map_err(|error| into_bus_error(&error))
     }

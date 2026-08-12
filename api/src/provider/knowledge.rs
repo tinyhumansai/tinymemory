@@ -97,6 +97,13 @@ pub trait MemoryGraph: Send + Sync {
         value: serde_json::Value,
     ) -> Result<(), MemoryError>;
 
+    /// Delete one key/value record, reporting whether it existed.
+    ///
+    /// # Errors
+    ///
+    /// Backend failures only.
+    async fn kv_delete(&self, namespace: Option<&str>, key: &str) -> Result<bool, MemoryError>;
+
     /// List key/value records, optionally restricted to a key prefix.
     ///
     /// # Errors

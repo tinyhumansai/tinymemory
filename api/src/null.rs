@@ -235,6 +235,29 @@ impl MemoryDocuments for NullMemoryProvider {
         unsupported(Capability::Documents)
     }
 
+    async fn list_documents(
+        &self,
+        _namespace: Option<&str>,
+    ) -> Result<serde_json::Value, MemoryError> {
+        unsupported(Capability::Documents)
+    }
+
+    async fn list_namespaces(&self) -> Result<Vec<String>, MemoryError> {
+        unsupported(Capability::Documents)
+    }
+
+    async fn delete_document(
+        &self,
+        _namespace: &str,
+        _document_id: &str,
+    ) -> Result<serde_json::Value, MemoryError> {
+        unsupported(Capability::Documents)
+    }
+
+    async fn clear_namespace(&self, _namespace: &str) -> Result<(), MemoryError> {
+        unsupported(Capability::Documents)
+    }
+
     async fn query_documents(
         &self,
         _namespace: &str,
@@ -323,6 +346,10 @@ impl MemoryGraph for NullMemoryProvider {
         _key: &str,
         _value: serde_json::Value,
     ) -> Result<(), MemoryError> {
+        unsupported(Capability::Graph)
+    }
+
+    async fn kv_delete(&self, _namespace: Option<&str>, _key: &str) -> Result<bool, MemoryError> {
         unsupported(Capability::Graph)
     }
 

@@ -343,6 +343,41 @@ impl MemoryDocuments for ModuleMemoryProvider {
             .map(|document| Self::cross(&document, "convert stored document"))
             .transpose()
     }
+
+    async fn list_documents(
+        &self,
+        namespace: Option<&str>,
+    ) -> Result<serde_json::Value, MemoryError> {
+        self.client
+            .list_documents(namespace)
+            .await
+            .map_err(|error| Self::other("list_documents", error))
+    }
+
+    async fn list_namespaces(&self) -> Result<Vec<String>, MemoryError> {
+        self.client
+            .list_namespaces()
+            .await
+            .map_err(|error| Self::other("list_namespaces", error))
+    }
+
+    async fn delete_document(
+        &self,
+        namespace: &str,
+        document_id: &str,
+    ) -> Result<serde_json::Value, MemoryError> {
+        self.client
+            .delete_document(namespace, document_id)
+            .await
+            .map_err(|error| Self::other("delete_document", error))
+    }
+
+    async fn clear_namespace(&self, namespace: &str) -> Result<(), MemoryError> {
+        self.client
+            .clear_namespace(namespace)
+            .await
+            .map_err(|error| Self::other("clear_namespace", error))
+    }
     async fn query_documents(
         &self,
         namespace: &str,
@@ -471,6 +506,13 @@ impl MemoryGraph for ModuleMemoryProvider {
             .kv_set(namespace, key, &value)
             .await
             .map_err(|error| Self::other("kv_put", error))
+    }
+
+    async fn kv_delete(&self, namespace: Option<&str>, key: &str) -> Result<bool, MemoryError> {
+        self.client
+            .kv_delete(namespace, key)
+            .await
+            .map_err(|error| Self::other("kv_delete", error))
     }
     async fn kv_list(
         &self,
