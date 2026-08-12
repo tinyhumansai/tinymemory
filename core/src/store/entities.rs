@@ -46,11 +46,7 @@ pub fn namespace_entities(
     )?;
     let rows = statement
         .query_map(
-            rusqlite::params![
-                namespace,
-                pattern,
-                i64::try_from(limit).unwrap_or(i64::MAX)
-            ],
+            rusqlite::params![namespace, pattern, i64::try_from(limit).unwrap_or(i64::MAX)],
             |row| {
                 let mentions: i64 = row.get(3)?;
                 Ok(TopEntity {
@@ -94,10 +90,7 @@ pub fn namespace_entity_edges(
             ],
             |row| {
                 let count: i64 = row.get(1)?;
-                Ok((
-                    row.get(0)?,
-                    u32::try_from(count.max(0)).unwrap_or(u32::MAX),
-                ))
+                Ok((row.get(0)?, u32::try_from(count.max(0)).unwrap_or(u32::MAX)))
             },
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -203,7 +196,10 @@ pub fn top_entities(config: &Config, limit: usize) -> Result<Vec<TopEntity>> {
 mod tests {
     use super::*;
 
-    fn scoped_config() -> (tempfile::TempDir, tinymemory_api::host::test_support::TestHostConfig) {
+    fn scoped_config() -> (
+        tempfile::TempDir,
+        tinymemory_api::host::test_support::TestHostConfig,
+    ) {
         crate::test_seams::init();
         let temp = tempfile::tempdir().expect("tempdir");
         let mut config = tinymemory_api::host::test_support::TestHostConfig::default();
@@ -211,13 +207,7 @@ mod tests {
         (temp, config)
     }
 
-    fn insert_entity(
-        config: &Config,
-        tree: &str,
-        entity: &str,
-        node: &str,
-        surface: &str,
-    ) {
+    fn insert_entity(config: &Config, tree: &str, entity: &str, node: &str, surface: &str) {
         let memory = memory_config_from(config, config.workspace_dir().clone());
         let connection = tinycortex::memory::chunks::shared_connection(&memory).expect("db");
         connection
@@ -268,8 +258,7 @@ mod tests {
         insert_entity(&config, "team-a", "person:bob", "shared", "Bob");
         insert_entity(&config, "team-b", "person:mallory", "shared", "Mallory");
 
-        let rows = namespace_entity_edges(&config, "team-a", "person:alice", 10)
-            .expect("edges");
+        let rows = namespace_entity_edges(&config, "team-a", "person:alice", 10).expect("edges");
         assert_eq!(rows, vec![("person:bob".to_string(), 1)]);
     }
 }
