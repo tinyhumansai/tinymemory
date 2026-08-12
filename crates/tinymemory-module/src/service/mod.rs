@@ -319,10 +319,12 @@ impl MemoryService {
         query: String,
         limit: usize,
     ) -> BusResult<NamespaceRetrievalContext> {
-        require_family!(self, as_documents, Capability::Documents)
+        let response = require_family!(self, as_documents, Capability::Documents)
             .query_documents(&namespace, &query, limit)
             .await
-            .map_err(|error| into_bus_error(&error))
+            .map_err(|error| into_bus_error(&error))?;
+        ensure_response_fits(&response, "QueryDocuments")?;
+        Ok(response)
     }
 
     async fn append(&self, request: IngestRequest) -> BusResult<()> {
@@ -339,10 +341,12 @@ impl MemoryService {
         limit: usize,
         scope: Option<SourceScope>,
     ) -> BusResult<Vec<Chunk>> {
-        require_family!(self, as_tree, Capability::Tree)
+        let response = require_family!(self, as_tree, Capability::Tree)
             .query_source(&namespace, &source_id, limit, scope.as_ref())
             .await
-            .map_err(|error| into_bus_error(&error))
+            .map_err(|error| into_bus_error(&error))?;
+        ensure_response_fits(&response, "QuerySource")?;
+        Ok(response)
     }
 
     async fn drill_down(&self, namespace: String, node_id: String) -> BusResult<QueryResult> {
@@ -372,10 +376,12 @@ impl MemoryService {
         query: Option<String>,
         limit: usize,
     ) -> BusResult<Vec<EntityHit>> {
-        require_family!(self, as_entities, Capability::Entities)
+        let response = require_family!(self, as_entities, Capability::Entities)
             .entities(&namespace, query.as_deref(), limit)
             .await
-            .map_err(|error| into_bus_error(&error))
+            .map_err(|error| into_bus_error(&error))?;
+        ensure_response_fits(&response, "Entities")?;
+        Ok(response)
     }
 
     async fn entity_edges(
@@ -426,10 +432,12 @@ impl MemoryService {
         prefix: Option<String>,
         limit: usize,
     ) -> BusResult<Vec<MemoryKvRecord>> {
-        require_family!(self, as_graph, Capability::Graph)
+        let response = require_family!(self, as_graph, Capability::Graph)
             .kv_list(namespace.as_deref(), prefix.as_deref(), limit)
             .await
-            .map_err(|error| into_bus_error(&error))
+            .map_err(|error| into_bus_error(&error))?;
+        ensure_response_fits(&response, "KvList")?;
+        Ok(response)
     }
 
     async fn relations(
@@ -439,7 +447,7 @@ impl MemoryService {
         predicate: Option<String>,
         limit: usize,
     ) -> BusResult<Vec<GraphRelationRecord>> {
-        require_family!(self, as_graph, Capability::Graph)
+        let response = require_family!(self, as_graph, Capability::Graph)
             .relations(
                 namespace.as_deref(),
                 subject.as_deref(),
@@ -447,7 +455,9 @@ impl MemoryService {
                 limit,
             )
             .await
-            .map_err(|error| into_bus_error(&error))
+            .map_err(|error| into_bus_error(&error))?;
+        ensure_response_fits(&response, "Relations")?;
+        Ok(response)
     }
 
     async fn put_relation(&self, relation: GraphRelationRecord) -> BusResult<()> {
@@ -574,14 +584,6 @@ impl MemoryService {
 /// pathological string, so a response that passes this check fits with margin.
 pub(crate) const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
-/// Per-entry allowance for the fields that are not `content`.
-///
-/// Keys, namespaces, timestamps, category and taint. Deliberately generous: this
-/// check exists to stop a response overflowing a frame, and over-estimating
-/// refuses slightly early while under-estimating fails at the transport with an
-/// error the caller cannot act on.
-const PER_ENTRY_OVERHEAD_BYTES: usize = 512;
-
 /// Refuse a response that would not fit in a frame.
 ///
 /// # Why a refusal and not a truncation
@@ -605,25 +607,22 @@ const PER_ENTRY_OVERHEAD_BYTES: usize = 512;
 ///
 /// [`wire::BUDGET_EXCEEDED`], when the estimate exceeds [`MAX_RESPONSE_BYTES`].
 /// The message names the method and the sizes, never entry content.
-fn ensure_response_fits(entries: &[MemoryEntry], method: &str) -> BusResult<()> {
-    let estimate: usize = entries
-        .iter()
-        .map(|entry| entry.content.len().saturating_add(PER_ENTRY_OVERHEAD_BYTES))
-        .sum();
+fn ensure_response_fits<T: serde::Serialize>(response: &T, method: &str) -> BusResult<()> {
+    let estimate = serde_json::to_vec(response)
+        .map_err(|error| BusError::Protocol(error.to_string()))?
+        .len();
 
     if estimate > MAX_RESPONSE_BYTES {
         log::warn!(
-            "[tinymemory:module] {method} refused: {} entries estimated at {estimate} bytes \
-             exceeds the {MAX_RESPONSE_BYTES} byte response ceiling",
-            entries.len()
+            "[tinymemory:module] {method} refused: response estimated at {estimate} bytes \
+             exceeds the {MAX_RESPONSE_BYTES} byte response ceiling"
         );
         return Err(BusError::MethodFailed {
             name: wire::BUDGET_EXCEEDED.to_string(),
             message: format!(
-                "{method} would return {} entries (~{estimate} bytes), over the \
+                "{method} would return ~{estimate} bytes, over the \
                  {MAX_RESPONSE_BYTES} byte response ceiling; narrow the query by \
-                 namespace, category or session",
-                entries.len()
+                 namespace, category or session"
             ),
         });
     }

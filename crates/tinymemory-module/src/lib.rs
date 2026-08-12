@@ -104,8 +104,8 @@ const SETUP_FAILED_ERROR: &str = "ai.tinyhumans.tinymemory.Error.SetupFailed";
 /// the host, which holds the real credential, so there is nothing to pass and
 /// nothing here that could leak one.
 async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()> {
-    claim_process_setup()?;
     config.validate().map_err(setup_error)?;
+    claim_process_setup()?;
 
     // `MemoryConfig` travels verbatim, and it contains a bearer token field for a
     // remote memory backend. Carried credentials are exactly what this module

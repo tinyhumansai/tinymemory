@@ -133,7 +133,10 @@ fn an_ordinary_list_response_is_not_refused() {
 
 #[test]
 fn an_empty_list_response_is_not_refused() {
-    assert!(super::ensure_response_fits(&[], "List").is_ok());
+    assert!(
+        super::ensure_response_fits(&Vec::<tinymemory_api::types::MemoryEntry>::new(), "List")
+            .is_ok()
+    );
 }
 
 #[test]
@@ -210,7 +213,10 @@ fn the_per_entry_overhead_is_counted_so_many_tiny_entries_still_trip_it() {
     // A million empty entries carry no content at all but still cannot cross a
     // frame — the JSON structure around each one is the payload. Counting only
     // `content.len()` would let this through.
-    let count = super::MAX_RESPONSE_BYTES / super::PER_ENTRY_OVERHEAD_BYTES + 1;
+    let encoded_entry = serde_json::to_vec(&entry_of(0))
+        .expect("serializable")
+        .len();
+    let count = super::MAX_RESPONSE_BYTES / encoded_entry + 1;
     let entries: Vec<_> = (0..count).map(|_| entry_of(0)).collect();
     assert!(
         super::ensure_response_fits(&entries, "List").is_err(),

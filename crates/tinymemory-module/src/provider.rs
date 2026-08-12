@@ -717,41 +717,37 @@ impl MemoryTree for ModuleMemoryProvider {
 impl MemoryEntities for ModuleMemoryProvider {
     async fn entities(
         &self,
-        _namespace: &str,
+        namespace: &str,
         query: Option<&str>,
         limit: usize,
     ) -> Result<Vec<EntityHit>, MemoryError> {
-        let rows: Vec<(String, String, String, u32)> = match query {
-            Some(query) => {
-                tinymemory_core::tree::retrieval::search_entities(&self.config, query, None, limit)
-                    .await
-                    .map_err(|error| Self::other("search entities", error))?
-                    .into_iter()
-                    .map(|hit| {
-                        (
-                            hit.canonical_id,
-                            hit.kind.as_str().to_string(),
-                            hit.surface,
-                            u32::try_from(hit.mention_count).unwrap_or(u32::MAX),
-                        )
-                    })
-                    .collect()
-            }
-            None => blocking(self.config.clone(), "list top entities", move |config| {
-                tinymemory_core::store::entities::top_entities(config, limit)
-            })
-            .await?
-            .into_iter()
-            .map(|hit| (hit.id, hit.kind, hit.name, hit.mentions))
-            .collect(),
-        };
+        let namespace = namespace.to_string();
+        let query_namespace = namespace.clone();
+        let query = query.map(str::to_string);
+        let rows = blocking(
+            self.config.clone(),
+            "list namespace entities",
+            move |config| {
+                tinymemory_core::store::entities::namespace_entities(
+                    config,
+                    &query_namespace,
+                    query.as_deref(),
+                    limit,
+                )
+            },
+        )
+        .await?
+        .into_iter()
+        .map(|hit| (hit.id, hit.kind, hit.name, hit.mentions))
+        .collect::<Vec<_>>();
 
         let config = self.config.clone();
         blocking(config, "attach entity hotness", move |config| {
             Ok(rows
                 .into_iter()
                 .map(|(id, kind, name, mentions)| {
-                    let hotness = tinymemory_core::store::trees::hotness::get(config, &id)
+                    let hotness_key = format!("{namespace}:{id}");
+                    let hotness = tinymemory_core::store::trees::hotness::get(config, &hotness_key)
                         .ok()
                         .flatten()
                         .map_or(0.0, |counters| {
@@ -776,28 +772,33 @@ impl MemoryEntities for ModuleMemoryProvider {
 
     async fn entity_edges(
         &self,
-        _namespace: &str,
+        namespace: &str,
         entity_id: &str,
         limit: usize,
     ) -> Result<Vec<GraphRelationRecord>, MemoryError> {
         let subject = entity_id.to_string();
         let lookup = subject.clone();
+        let namespace = namespace.to_string();
+        let query_namespace = namespace.clone();
         let neighbours = blocking(self.config.clone(), "read entity edges", move |config| {
-            let mut rows = tinymemory_core::tree::graph::store::neighbors(config, &lookup)?;
-            rows.truncate(limit);
-            Ok(rows)
+            tinymemory_core::store::entities::namespace_entity_edges(
+                config,
+                &query_namespace,
+                &lookup,
+                limit,
+            )
         })
         .await?;
         Ok(neighbours
             .into_iter()
             .map(|(object, weight)| GraphRelationRecord {
-                namespace: None,
+                namespace: Some(namespace.clone()),
                 subject: subject.clone(),
                 predicate: "co_occurs_with".to_string(),
                 object,
                 attrs: serde_json::Value::Null,
                 updated_at: 0.0,
-                evidence_count: u32::try_from(weight.max(0)).unwrap_or(u32::MAX),
+                evidence_count: weight,
                 order_index: None,
                 document_ids: Vec::new(),
                 chunk_ids: Vec::new(),
@@ -807,13 +808,15 @@ impl MemoryEntities for ModuleMemoryProvider {
 
     async fn touch_entities(
         &self,
-        _namespace: &str,
+        namespace: &str,
         entity_ids: &[String],
     ) -> Result<(), MemoryError> {
         let entity_ids = entity_ids.to_vec();
+        let namespace = namespace.to_string();
         blocking(self.config.clone(), "touch entities", move |config| {
             let now = Utc::now().timestamp_millis();
             for entity_id in entity_ids {
+                let entity_id = format!("{namespace}:{entity_id}");
                 let mut counters =
                     tinymemory_core::store::trees::hotness::get_or_fresh(config, &entity_id)?;
                 counters.mention_count_30d = counters.mention_count_30d.saturating_add(1);
@@ -959,13 +962,15 @@ impl MemorySourceSink for ModuleMemoryProvider {
                 taint,
             };
             let input = Self::cross(&input, "convert source document")?;
-            let id = self
-                .client
-                .put_doc(input)
-                .await
-                .map_err(|error| Self::other("accept source item", error))?;
-            outcome.written = outcome.written.saturating_add(1);
-            outcome.ids.push(id);
+            match self.client.put_doc(input).await {
+                Ok(id) => {
+                    outcome.written = outcome.written.saturating_add(1);
+                    outcome.ids.push(id);
+                }
+                Err(_) => {
+                    outcome.skipped = outcome.skipped.saturating_add(1);
+                }
+            }
         }
         Ok(outcome)
     }
