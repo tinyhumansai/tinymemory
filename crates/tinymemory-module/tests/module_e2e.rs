@@ -197,7 +197,7 @@ fn proxy(connection: &Connection) -> tinybus::Proxy {
 
 #[tokio::test]
 #[ignore = "drives a real dlopen'ed module; must be the only such test in the process — see the module docs"]
-async fn the_module_advertises_exactly_the_mandatory_families() {
+async fn the_module_advertises_the_complete_tinymemory_api() {
     let workspace = tempfile::tempdir().expect("tempdir");
     let (client, _host, _task) = admit_module(workspace.path()).await;
 
@@ -206,18 +206,10 @@ async fn the_module_advertises_exactly_the_mandatory_families() {
         .await
         .expect("Capabilities");
 
-    // The adapter deliberately advertises only what it can reach. Advertising
-    // more would make `audit_provider` fail host-side, and would register RPC
-    // methods that answer errors.
-    //
-    // Asserted as an exact set rather than as "the mandatory three are present
-    // and `Tree` is absent": that weaker pair passes while any *other* optional
-    // family is advertised, which is the same overstatement with a different
-    // name on it.
     assert_eq!(
         capabilities,
-        Capabilities::mandatory(),
-        "the module must advertise exactly the mandatory families"
+        Capabilities::all(),
+        "the compiled module must own every TinyMemory capability family"
     );
     for mandatory in Capability::MANDATORY {
         assert!(
@@ -500,6 +492,38 @@ const EXPECTED_METHODS: &[&str] = &[
     "Recall",
     "ExportPage",
     "ImportRecords",
+    "IngestDocument",
+    "IngestChat",
+    "PutDocument",
+    "GetDocument",
+    "QueryDocuments",
+    "Append",
+    "QuerySource",
+    "DrillDown",
+    "Seal",
+    "Cascade",
+    "Entities",
+    "EntityEdges",
+    "TouchEntities",
+    "KvGet",
+    "KvPut",
+    "KvList",
+    "Relations",
+    "PutRelation",
+    "CaptureSnapshot",
+    "Snapshots",
+    "Diff",
+    "Goals",
+    "SetGoals",
+    "ToolRules",
+    "PutToolRule",
+    "DeleteToolRule",
+    "AcceptSourceItems",
+    "ForgetSource",
+    "Reembed",
+    "Compact",
+    "Consolidate",
+    "Doctor",
 ];
 
 #[tokio::test]

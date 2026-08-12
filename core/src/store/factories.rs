@@ -577,6 +577,32 @@ fn create_unified_memory_full(
     )
 }
 
+/// Create the high-level memory client used by the compiled TinyMemory module.
+///
+/// Unlike [`crate::store::MemoryClient::from_workspace_dir`], this preserves
+/// the caller's resolved embedding and storage configuration. The returned
+/// client and its raw [`Memory`] handle share one `UnifiedMemory` instance and
+/// one ingestion worker.
+pub fn create_memory_client_with_local_ai(
+    memory: &MemoryConfig,
+    local_embedding_model: Option<&str>,
+    embedding_api_key: &str,
+    embedding_routes: &[EmbeddingRouteConfig],
+    storage_provider: Option<&StorageProviderConfig>,
+    workspace_dir: &Path,
+) -> anyhow::Result<crate::store::MemoryClient> {
+    let store = create_unified_memory_full(
+        memory,
+        embedding_routes,
+        storage_provider,
+        local_embedding_model,
+        embedding_api_key,
+        workspace_dir,
+        "memory",
+    )?;
+    Ok(crate::store::MemoryClient::from_unified_memory(store))
+}
+
 /// Create a memory instance specifically for migration purposes.
 ///
 /// The unified namespace memory core has a single workspace-scoped

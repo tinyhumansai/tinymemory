@@ -22,7 +22,7 @@
 //! rather than growing a subscribe method here.
 
 /// Why an embedding model was reported unhealthy, and what took over.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EmbeddingHealthReason {
     /// The provider that failed.
     pub provider: String,
@@ -46,7 +46,7 @@ pub type SyncTrigger = String;
 /// Deliberately **not** `#[non_exhaustive]`: the host's mapping impl matches
 /// exhaustively on purpose, so adding a variant here is a compile error at the
 /// mapping site rather than an event that silently never reaches the bus.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum MemoryEvent {
     /// A sync run moved to a new stage.
     SyncStageChanged {

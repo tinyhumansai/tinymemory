@@ -31,9 +31,10 @@ tinymemory = { path = "../.." }
 # The engine and the seam that adapts it. Carrying these is the entire point of
 # the module: they are 14.7s of the host's critical build path, and a host that
 # loads this binary compiles neither.
-tinymemory-core = { path = "../../core" }
+tinymemory-core = { path = "../../core", features = ["memory-git"] }
 tinymemory-tinycortex = { path = "../../adapters/tinycortex" }
 tinycortex = { version = "0.1" }
+tinyagents = { version = "2.1" }
 # TinyBus provides the typed service interface and the dynamic module host ABI.
 # Reached by path now that this crate is its own workspace root: the nested
 # checkout's `[workspace.package]` resolves correctly from here.
@@ -47,6 +48,7 @@ tinybus-module = { version = "0.1.0", path = "../../vendor/tinybus/crates/tinybu
 async-trait = "0.1"
 # `EmbeddingProvider::embed` is anyhow-typed.
 anyhow = "1"
+chrono = "0.4"
 # Diagnostics. Never carries a namespace key or entry content — see `service`.
 log = "0.4"
 # Module configuration is JSON supplied by the host at load time.

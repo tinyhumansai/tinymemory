@@ -93,12 +93,28 @@ impl MemoryClient {
     /// tool-scoped memory layer) without depending on the concrete
     /// `MemoryClient` type or holding a reference to it.
     ///
-    /// Intentionally `pub(crate)` — handing a raw `Arc<dyn Memory>` to an
-    /// external consumer bypasses any policy decorator wrapped around the
-    /// `MemoryClient` API, so the escape hatch stays in-crate. Mirrors
-    /// [`Self::profile_conn`].
+    /// This is public for the `tinymemory-module` provider, which implements
+    /// the TinyMemory contract over this exact client. Product hosts must use
+    /// the guarded provider and must not retain this raw engine handle.
     pub fn memory_handle(&self) -> Arc<dyn crate::Memory> {
         Arc::clone(&self.inner) as Arc<dyn crate::Memory>
+    }
+
+    /// Wrap an already-configured unified store and start its ingestion worker.
+    ///
+    /// This is the constructor used by the compiled module: the module first
+    /// resolves the host-supplied embedding route and storage configuration,
+    /// then gives the resulting store to the high-level client without opening
+    /// a second database or creating a second ingestion queue.
+    #[must_use]
+    pub fn from_unified_memory(inner: UnifiedMemory) -> Self {
+        let inner = Arc::new(inner);
+        let ingestion_queue =
+            ingestion_queue::start_worker_with_state(Arc::clone(&inner), IngestionState::new());
+        Self {
+            inner,
+            ingestion_queue,
+        }
     }
 
     /// Create a new local memory client using the default `.openhuman` directory.
@@ -141,18 +157,7 @@ impl MemoryClient {
         // Create the underlying UnifiedMemory instance.
         let memory =
             UnifiedMemory::new(&workspace_dir, embedder, None).map_err(|e| format!("{e}"))?;
-        let inner = Arc::new(memory);
-
-        // Start the background worker for document ingestion and graph extraction.
-        // The worker shares its IngestionState with the synchronous ingest path
-        // below so all ingestion is singleton-serialised.
-        let ingestion_queue =
-            ingestion_queue::start_worker_with_state(Arc::clone(&inner), IngestionState::new());
-
-        Ok(Self {
-            inner,
-            ingestion_queue,
-        })
+        Ok(Self::from_unified_memory(memory))
     }
 
     /// Store a document in a specific namespace.

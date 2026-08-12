@@ -11,6 +11,19 @@ use crate::sync::composio::providers::profile::{is_self_identity_any_toolkit, Id
 use crate::tinycortex::memory_config_from;
 use crate::Config;
 
+/// Aggregate entity-index row for capability providers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TopEntity {
+    /// Canonical entity id.
+    pub id: String,
+    /// Stable entity kind string.
+    pub kind: String,
+    /// Representative observed surface form.
+    pub name: String,
+    /// Number of indexed observations.
+    pub mentions: u32,
+}
+
 pub use tinycortex::memory::store::entity_index::EntityHit;
 
 #[derive(Debug)]
@@ -78,6 +91,32 @@ pub fn list_entity_ids_for_node(config: &Config, node_id: &str) -> Result<Vec<St
 
 pub fn count_entity_index(config: &Config) -> Result<u64> {
     index(config)?.count_entity_index()
+}
+
+/// Most frequently observed entities, with recency as the tie-breaker.
+pub fn top_entities(config: &Config, limit: usize) -> Result<Vec<TopEntity>> {
+    let memory = memory_config_from(config, config.workspace_dir().clone());
+    let connection = tinycortex::memory::chunks::shared_connection(&memory)?;
+    let guard = connection.lock();
+    let mut statement = guard.prepare(
+        "SELECT entity_id, entity_kind, MAX(surface), COUNT(*)
+           FROM mem_tree_entity_index
+          GROUP BY entity_id, entity_kind
+          ORDER BY COUNT(*) DESC, MAX(timestamp_ms) DESC
+          LIMIT ?1",
+    )?;
+    let rows = statement
+        .query_map([i64::try_from(limit).unwrap_or(i64::MAX)], |row| {
+            let mentions: i64 = row.get(3)?;
+            Ok(TopEntity {
+                id: row.get(0)?,
+                kind: row.get(1)?,
+                name: row.get(2)?,
+                mentions: u32::try_from(mentions.max(0)).unwrap_or(u32::MAX),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 #[cfg(test)]

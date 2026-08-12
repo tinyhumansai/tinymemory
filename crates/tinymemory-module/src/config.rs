@@ -35,7 +35,10 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tinymemory_api::host::{EmbeddingRouteConfig, MemoryConfig, StorageProviderConfig};
+use tinymemory_api::host::{
+    EmbeddingRouteConfig, LocalAiConfig, MemoryConfig, MemoryTreeConfig, SchedulerGateConfig,
+    StorageProviderConfig,
+};
 
 /// Everything this module needs to bring up a memory engine.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +55,35 @@ pub struct ModuleConfig {
 
     /// The engine's own configuration, passed through unchanged.
     pub memory: MemoryConfig,
+
+    /// Summary-tree and language-model settings used by tree operations.
+    pub memory_tree: MemoryTreeConfig,
+
+    /// Background-work admission policy used by bounded maintenance steps.
+    pub scheduler_gate: SchedulerGateConfig,
+
+    /// Local model selection. Credentials remain host-side; this contains only
+    /// routing and model identifiers.
+    pub local_ai: LocalAiConfig,
+
+    /// Resolved route for the embedding workload.
+    pub embeddings_provider: Option<String>,
+
+    /// Resolved route for memory summarisation/extraction.
+    pub memory_provider: Option<String>,
+
+    /// Default chat model identifier used for module-side summarisation.
+    pub default_model: Option<String>,
+
+    /// Sampling temperature for module-side background language tasks.
+    pub default_temperature: f64,
+
+    /// Optional output language for summaries and extracted artifacts.
+    pub output_language: Option<String>,
+
+    /// Serialized memory-source registry used by snapshot operations.
+    #[serde(default = "empty_array")]
+    pub memory_sources: serde_json::Value,
 
     /// Per-workload embedding routes, as the host resolved them.
     pub embedding_routes: Vec<EmbeddingRouteConfig>,
@@ -97,6 +129,15 @@ impl Default for ModuleConfig {
         Self {
             workspace_dir: PathBuf::new(),
             memory: MemoryConfig::default(),
+            memory_tree: MemoryTreeConfig::default(),
+            scheduler_gate: SchedulerGateConfig::default(),
+            local_ai: LocalAiConfig::default(),
+            embeddings_provider: None,
+            memory_provider: None,
+            default_model: None,
+            default_temperature: 0.0,
+            output_language: None,
+            memory_sources: empty_array(),
             embedding_routes: Vec::new(),
             storage_provider: None,
             ollama_base_url: String::new(),
@@ -106,6 +147,10 @@ impl Default for ModuleConfig {
             driver_id: tinymemory::registry::TINYCORTEX_DRIVER_ID.to_string(),
         }
     }
+}
+
+fn empty_array() -> serde_json::Value {
+    serde_json::Value::Array(Vec::new())
 }
 
 impl ModuleConfig {

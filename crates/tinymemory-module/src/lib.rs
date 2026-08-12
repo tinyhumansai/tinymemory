@@ -43,13 +43,12 @@
 //! [`config::ModuleConfig::strip_host_credentials`], not merely asserted about a
 //! field list. "Carried verbatim" carries credentials verbatim too.
 //!
-//! # Scope: the mandatory three
+//! # Scope: the complete TinyMemory API
 //!
-//! The served surface is `tinymemory_api`'s mandatory capability families —
-//! Core, Recall, Portability — which is exactly what `tinymemory-tinycortex`
-//! can provide. The ten optional families need a host's configuration, embedding
-//! compute and job queue, and a host that has those implements them itself.
-//! See [`service`] for the method list.
+//! The module boundary mirrors every capability family in `tinymemory_api`.
+//! Host applications keep policy, scheduling, credentials, and bus/event types;
+//! memory storage, retrieval, ingestion, trees, graph operations, goals, source
+//! persistence, and maintenance execute inside this compiled module.
 
 // Test code may panic; library code may not. The `[lints]` table cannot be
 // scoped to non-test builds, so the exemption is expressed here instead.
@@ -63,15 +62,20 @@
     )
 )]
 
+pub mod chat;
 pub mod config;
 pub mod embedding;
+mod host;
+mod provider;
 mod service;
 
+pub use chat::{CHAT_HOST_BUS_NAME, CHAT_HOST_INTERFACE, CHAT_HOST_OBJECT_PATH};
 pub use config::ModuleConfig;
 pub use embedding::{
     BusEmbeddingHost, BusEmbeddingProvider, EMBEDDING_HOST_BUS_NAME, EMBEDDING_HOST_INTERFACE,
     EMBEDDING_HOST_OBJECT_PATH,
 };
+pub use host::{RUNTIME_HOST_BUS_NAME, RUNTIME_HOST_INTERFACE, RUNTIME_HOST_OBJECT_PATH};
 pub use service::{BUS_NAME, OBJECT_PATH};
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -126,8 +130,13 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
         connection.clone(),
         &config,
     )));
+    tinymemory_core::chat_host::set_chat_host(Arc::new(chat::BusChatHost::new(
+        connection.clone(),
+        &config,
+    )));
+    host::install(connection.clone());
 
-    let memory = tinymemory_core::store::factories::create_memory_with_local_ai(
+    let client = tinymemory_core::store::factories::create_memory_client_with_local_ai(
         &config.memory,
         None,
         "",
@@ -144,14 +153,13 @@ async fn setup(connection: Connection, mut config: ModuleConfig) -> BusResult<()
         setup_error("create memory store")
     })?;
 
-    let provider = tinymemory_tinycortex::provider(Arc::from(memory));
+    let provider = provider::ModuleMemoryProvider::new(&config, Arc::new(client));
     service::serve(&connection, Arc::new(provider)).await
 }
 
 /// Claim this process's single setup slot.
 ///
-/// `setup` installs a **process-global** embedding host
-/// (`tinymemory_core::embedding_host::set_embedding_host`), so it is not
+/// `setup` installs **process-global** host callbacks, so it is not
 /// re-entrant the way a per-host resource would be. `ModuleHost` rejects a
 /// duplicate module name only within one host, and nothing stops a process from
 /// building a second host — a test harness is the obvious way it happens. The
@@ -172,7 +180,7 @@ fn claim_process_setup() -> BusResult<()> {
     if CLAIMED.swap(true, Ordering::SeqCst) {
         return Err(setup_error(
             "this module is already set up in this process; it installs a \
-             process-global embedding host and cannot be served twice",
+             process-global host callbacks and cannot be served twice",
         ));
     }
     Ok(())
@@ -216,6 +224,38 @@ mod exports {
             "Recall",
             "ExportPage",
             "ImportRecords",
+            "IngestDocument",
+            "IngestChat",
+            "PutDocument",
+            "GetDocument",
+            "QueryDocuments",
+            "Append",
+            "QuerySource",
+            "DrillDown",
+            "Seal",
+            "Cascade",
+            "Entities",
+            "EntityEdges",
+            "TouchEntities",
+            "KvGet",
+            "KvPut",
+            "KvList",
+            "Relations",
+            "PutRelation",
+            "CaptureSnapshot",
+            "Snapshots",
+            "Diff",
+            "Goals",
+            "SetGoals",
+            "ToolRules",
+            "PutToolRule",
+            "DeleteToolRule",
+            "AcceptSourceItems",
+            "ForgetSource",
+            "Reembed",
+            "Compact",
+            "Consolidate",
+            "Doctor",
         ],
         signals = [],
         // The host's embedder is deliberately NOT declared as `requires`. That
