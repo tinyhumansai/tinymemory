@@ -18,6 +18,7 @@
 
 use async_trait::async_trait;
 
+use crate::capabilities::Capability;
 use crate::chunks::Chunk;
 use crate::error::MemoryError;
 use crate::provider::types::{IngestItem, IngestOutcome, SourceScope};
@@ -146,12 +147,16 @@ pub trait MemoryDocuments: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Backend failures only; an empty namespace returns empty context.
+    /// [`MemoryError::Unsupported`] when a provider predating this optional
+    /// operation does not implement it, otherwise backend failures. An empty
+    /// namespace returns empty context.
     async fn recall_documents(
         &self,
-        namespace: &str,
-        limit: usize,
-    ) -> Result<NamespaceRetrievalContext, MemoryError>;
+        _namespace: &str,
+        _limit: usize,
+    ) -> Result<NamespaceRetrievalContext, MemoryError> {
+        Err(MemoryError::unsupported(Capability::Documents))
+    }
 }
 
 /// The time-ordered summary tree: buffered leaves rolled up into hour → day →
