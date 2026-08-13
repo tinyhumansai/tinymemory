@@ -392,6 +392,20 @@ impl MemoryDocuments for ModuleMemoryProvider {
             .map_err(|error| Self::other("query_documents", error))?;
         Self::cross(&context, "convert document query result")
     }
+
+    async fn recall_documents(
+        &self,
+        namespace: &str,
+        limit: usize,
+    ) -> Result<NamespaceRetrievalContext, MemoryError> {
+        let limit = u32::try_from(limit).unwrap_or(u32::MAX);
+        let context = self
+            .client
+            .recall_namespace_context_data(namespace, limit)
+            .await
+            .map_err(|error| Self::other("recall_documents", error))?;
+        Self::cross(&context, "convert document recall result")
+    }
 }
 
 #[async_trait]

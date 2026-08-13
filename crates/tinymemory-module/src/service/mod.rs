@@ -359,6 +359,19 @@ impl MemoryService {
         Ok(response)
     }
 
+    async fn recall_documents(
+        &self,
+        namespace: String,
+        limit: usize,
+    ) -> BusResult<NamespaceRetrievalContext> {
+        let response = require_family!(self, as_documents, Capability::Documents)
+            .recall_documents(&namespace, limit)
+            .await
+            .map_err(|error| into_bus_error(&error))?;
+        ensure_response_fits(&response, "RecallDocuments")?;
+        Ok(response)
+    }
+
     async fn append(&self, request: IngestRequest) -> BusResult<()> {
         require_family!(self, as_tree, Capability::Tree)
             .append(request)

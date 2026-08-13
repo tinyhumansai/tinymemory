@@ -266,6 +266,14 @@ impl MemoryDocuments for NullMemoryProvider {
     ) -> Result<NamespaceRetrievalContext, MemoryError> {
         unsupported(Capability::Documents)
     }
+
+    async fn recall_documents(
+        &self,
+        _namespace: &str,
+        _limit: usize,
+    ) -> Result<NamespaceRetrievalContext, MemoryError> {
+        unsupported(Capability::Documents)
+    }
 }
 
 #[async_trait]

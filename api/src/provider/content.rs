@@ -137,6 +137,21 @@ pub trait MemoryDocuments: Send + Sync {
         query: &str,
         limit: usize,
     ) -> Result<NamespaceRetrievalContext, MemoryError>;
+
+    /// Recall the highest-ranked context from a namespace without a query.
+    ///
+    /// This is a distinct engine operation rather than a query with an empty
+    /// string: query-less recall applies the namespace's freshness and
+    /// priority ranking without introducing a synthetic search term.
+    ///
+    /// # Errors
+    ///
+    /// Backend failures only; an empty namespace returns empty context.
+    async fn recall_documents(
+        &self,
+        namespace: &str,
+        limit: usize,
+    ) -> Result<NamespaceRetrievalContext, MemoryError>;
 }
 
 /// The time-ordered summary tree: buffered leaves rolled up into hour → day →
