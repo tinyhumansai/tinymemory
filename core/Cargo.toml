@@ -29,8 +29,13 @@ tinycortex-api = { version = "0.1" }
 tinyagents = { version = "2.1", features = ["sqlite"] }
 anyhow = "1.0"
 async-trait = "0.1"
-# Only under `memory-git`; see the feature's comment.
-git2 = { version = "0.21", optional = true, default-features = false, features = ["vendored-libgit2"] }
+# NO `git2` HERE, DELIBERATELY — do not add it back. `diff/` holds the ops and
+# the stubs around the ledger, never a repository handle: tinycortex owns every
+# libgit2 call in the stack, and `memory-git` reaches it by forwarding
+# `tinycortex/git-diff` + `tinycortex/wiki-git`. A declaration here would be an
+# optional dependency with no `use` behind it, and one free to drift off
+# tinycortex's major — which `links = "git2"` turns into a hard cargo error
+# rather than a warning.
 # `store/factories.rs` exposes a tiny health router for the embedded provider.
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "ws", "macros"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -74,7 +79,8 @@ tokio = { version = "1", features = ["test-util"] }
 [features]
 default = []
 # Git-backed diff snapshots and the wiki git mirror. Gated because it is what
-# drags `git2` / `libgit2-sys` / `libz-sys` — a native build — into the graph.
+# drags `git2` / `libgit2-sys` / `libz-sys` — a native build — into the graph,
+# by way of tinycortex, which is the only crate here that links libgit2.
 # The host forwards its own `memory-git` feature to this one; when off, the
 # `diff` domain's ops are stubbed rather than `#[cfg]`'d at each call site, so a
 # diff simply never materialises.
@@ -82,7 +88,7 @@ default = []
 # NOT in `default`, matching the host. The off-path builds because tinycortex
 # makes the same carve-out: its `memory::diff::{types, source}` are serde-only
 # and stay compiled, so only the git-touching half disappears.
-memory-git = ["dep:git2", "tinycortex/git-diff", "tinycortex/wiki-git"]
+memory-git = ["tinycortex/git-diff", "tinycortex/wiki-git"]
 # Exposes the crate's test helpers (`chat::test_override`,
 # `chat::StaticChatProvider`, `tool_memory::test_helpers`) to *other* crates'
 # tests. They were `#[cfg(test)]` before the extraction, when the host and the

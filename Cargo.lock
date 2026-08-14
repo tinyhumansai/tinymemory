@@ -1844,7 +1844,6 @@ dependencies = [
  "chrono",
  "dirs",
  "futures",
- "git2",
  "log",
  "objc2",
  "objc2-contacts",
