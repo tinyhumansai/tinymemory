@@ -31,6 +31,7 @@ use tinycortex::memory::MemoryConfig;
 #[cfg(test)]
 use tinymemory_api::host::test_support::TestHostConfig;
 
+use crate::tree::score::embed::effective_embedder_slug;
 use crate::Config;
 
 /// Build a [`MemoryConfig`] from the host [`Config`] and the resolved memory
