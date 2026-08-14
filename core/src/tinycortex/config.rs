@@ -9,6 +9,10 @@
 //! Field provenance:
 //! - `workspace` ← the memory workspace root (same root `MemoryClient` opens).
 //! - `embedding.dim` ← `config.memory().embedding_dimensions`.
+//! - `embedding.provider` ← [`effective_embedder_slug`], the slug the embedder
+//!   ladder actually resolves to — **not** `config.memory().embedding_provider`.
+//!   See the note on the mapping below; reading that field here would mis-key
+//!   every locally-embedded row.
 //! - `embedding.model` ← `config.memory().embedding_model`.
 //! - `embedding.strict` ← `config.memory_tree().embedding_strict` (when false the
 //!   engine tolerates an inert embedder and falls back to scope+recency rerank).
