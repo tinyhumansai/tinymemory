@@ -96,6 +96,29 @@ mod tests {
     }
 
     #[test]
+    fn embedding_provider_is_the_resolved_slug_not_the_config_field() {
+        // The regression this pins: `memory.embedding_provider` is not
+        // authoritative. A user embedding entirely locally still reads as
+        // `"cloud"` there, because neither local rung of the ladder rewrites
+        // the field. Since `provider` keys the vector space, mapping it
+        // straight through would file local vectors under the cloud provider.
+        let mut config = TestHostConfig::default();
+        config.memory.embedding_provider = "cloud".to_string();
+        // Rung 1 of the ladder: an explicit Ollama endpoint + model.
+        config.memory_tree.embedding_endpoint = Some("http://127.0.0.1:11434".to_string());
+        config.memory_tree.embedding_model = Some("nomic-embed-text".to_string());
+
+        let mc = memory_config_from(&config, PathBuf::from("/tmp/ws"));
+
+        assert_eq!(
+            mc.embedding.provider, "ollama",
+            "locally-resolved embeddings must be keyed as ollama, not the \
+             stale 'cloud' spelling in memory.embedding_provider"
+        );
+        assert_ne!(mc.embedding.provider, config.memory.embedding_provider);
+    }
+
+    #[test]
     fn tree_defaults_match_engine_constants() {
         // The base mapping leaves tree budgets at the crate defaults, which are
         // the host engine's own constants — asserted here so a crate-side change
