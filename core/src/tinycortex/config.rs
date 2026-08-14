@@ -43,8 +43,20 @@ use crate::Config;
 pub fn memory_config_from(config: &Config, workspace: PathBuf) -> MemoryConfig {
     let mut mc = MemoryConfig::new(workspace);
     mc.content_root = Some(config.memory_tree_content_root());
+    // `provider` is part of the signature every per-model sidecar row is keyed
+    // by, so it has to name the backend that actually produced the vectors —
+    // two backends serving one model id must never share a vector space.
+    //
+    // That is `effective_embedder_slug`, which walks the same resolution ladder
+    // the read and write factories walk, and NOT `config.memory()
+    // .embedding_provider`: the ladder resolves local Ollama from
+    // `memory_tree.embedding_endpoint` or the unified
+    // `workload_local_model("embeddings")` setting, and neither path rewrites
+    // that field — so a user embedding entirely locally still reads as `"cloud"`
+    // there. Keying on it would file local vectors under the cloud provider.
     mc.embedding = EmbeddingConfig {
         dim: config.memory().embedding_dimensions,
+        provider: effective_embedder_slug(config).to_string(),
         model: config.memory().embedding_model.clone(),
         strict: config.memory_tree().embedding_strict,
     };
