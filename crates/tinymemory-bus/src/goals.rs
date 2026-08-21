@@ -110,7 +110,7 @@ impl GoalsDoc {
 
     /// Allocate the next free `g<N>` id not already used in the list.
     pub fn next_id(&self) -> String {
-        let mut n = self.items.len() + 1;
+        let mut n = 1;
         loop {
             let candidate = format!("g{n}");
             if !self.items.iter().any(|i| i.id == candidate) {

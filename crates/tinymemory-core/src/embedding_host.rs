@@ -78,86 +78,8 @@ pub fn embedding_test_guard() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// A stub [`EmbeddingHost`] for tests.
-///
-/// Several tests assert on the cloud-fallback tuple, which the core no longer
-/// owns — the managed model id and dimensionality are the host's to state, so
-/// with no host installed there is nothing true to assert. Installing this
-/// gives those tests a known answer without reaching for the real provider
-/// stack.
 #[cfg(test)]
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct TestEmbeddingHost;
-
+#[path = "embedding_host_test_support.rs"]
+mod test_support;
 #[cfg(test)]
-impl TestEmbeddingHost {
-    /// The model id [`Self`] reports as the managed cloud default.
-    pub(crate) const CLOUD_MODEL: &'static str = "test-cloud-embed";
-    /// The dimensionality [`Self::CLOUD_MODEL`] emits.
-    pub(crate) const CLOUD_DIMENSIONS: usize = 1024;
-
-    /// Install this stub as the process-global embedding host.
-    pub(crate) fn install() {
-        set_embedding_host(Arc::new(Self));
-    }
-}
-
-#[cfg(test)]
-impl EmbeddingHost for TestEmbeddingHost {
-    fn resolve_api_key(&self, _provider: &str) -> Option<String> {
-        None
-    }
-
-    fn ollama_base_url(&self) -> String {
-        std::env::var("OPENHUMAN_OLLAMA_BASE_URL")
-            .unwrap_or_else(|_| "http://127.0.0.1:11434".to_string())
-    }
-
-    fn default_embedding_provider(&self) -> Arc<dyn tinymemory_api::host::EmbeddingProvider> {
-        Arc::new(tinymemory_api::host::NoopEmbedding)
-    }
-
-    fn create_embedding_provider_with_credentials(
-        &self,
-        _provider: &str,
-        _model: &str,
-        _dims: usize,
-        _api_key: &str,
-        _custom_endpoint: Option<&str>,
-    ) -> Result<Box<dyn tinymemory_api::host::EmbeddingProvider>, String> {
-        Ok(Box::new(tinymemory_api::host::NoopEmbedding))
-    }
-
-    fn model_supports_dimensions(&self, model: &str) -> bool {
-        // Mirrors the host's rule rather than answering `true`: the tests that
-        // reach this are about the *ladder's* reaction to a non-reducible
-        // model, so a stub that says everything is reducible would make them
-        // pass without exercising anything.
-        model.starts_with("text-embedding-3-")
-    }
-
-    fn cloud_embedding_provider(
-        &self,
-        _model: &str,
-        _dims: usize,
-    ) -> Result<Box<dyn tinymemory_api::host::EmbeddingProvider>, String> {
-        Ok(Box::new(tinymemory_api::host::NoopEmbedding))
-    }
-
-    fn default_cloud_embedding_model(&self) -> &str {
-        Self::CLOUD_MODEL
-    }
-
-    fn default_cloud_embedding_dimensions(&self) -> usize {
-        Self::CLOUD_DIMENSIONS
-    }
-
-    fn ollama_embedding_provider(
-        &self,
-        _base_url: &str,
-        _model: &str,
-        _dims: usize,
-    ) -> Result<Box<dyn tinymemory_api::host::EmbeddingProvider>, String> {
-        Ok(Box::new(tinymemory_api::host::NoopEmbedding))
-    }
-}
+pub(crate) use test_support::TestEmbeddingHost;

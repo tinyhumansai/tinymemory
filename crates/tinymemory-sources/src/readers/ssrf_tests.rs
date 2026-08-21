@@ -1,5 +1,25 @@
 use super::*;
 
+async fn local_response(response: &'static [u8]) -> reqwest::Response {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind controlled server");
+    let address = listener.local_addr().expect("server address");
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept request");
+        let mut request = [0_u8; 1024];
+        let _ = stream.read(&mut request).await.expect("read request");
+        stream.write_all(response).await.expect("write response");
+    });
+    let received = reqwest::get(format!("http://{address}/"))
+        .await
+        .expect("controlled response");
+    server.await.expect("server task");
+    received
+}
+
 // ── SSRF guard ──────────────────────────────────────────────────────
 
 #[test]
@@ -162,4 +182,30 @@ fn is_public_ip_accepts_global_addresses() {
     for s in allowed {
         assert!(is_public_ip(public_ip(s)), "expected {s:?} to be allowed");
     }
+}
+
+#[tokio::test]
+async fn capped_body_reader_accepts_small_streams_and_enforces_both_size_paths() {
+    let small = local_response(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello").await;
+    assert_eq!(read_body_capped(small, 5).await.unwrap(), b"hello");
+
+    let declared = local_response(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nabcdef").await;
+    let error = read_body_capped(declared, 5)
+        .await
+        .expect_err("declared body exceeds cap");
+    assert!(error.contains("Content-Length=6"));
+
+    let chunked = local_response(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n3\r\ndef\r\n0\r\n\r\n",
+    )
+    .await;
+    let error = read_body_capped(chunked, 5)
+        .await
+        .expect_err("streamed body exceeds cap");
+    assert!(error.contains("read 6 bytes"));
+}
+
+#[test]
+fn client_builder_installs_the_hardened_policy() {
+    build_client().expect("hardened HTTP client builds");
 }

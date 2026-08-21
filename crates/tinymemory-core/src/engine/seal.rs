@@ -264,3 +264,7 @@ pub async fn flush_stale_tree_buffers(
     )
     .await
 }
+
+#[cfg(test)]
+#[path = "seal_tests.rs"]
+mod tests;

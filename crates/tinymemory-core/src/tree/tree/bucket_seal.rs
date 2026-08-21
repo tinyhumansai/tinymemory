@@ -79,3 +79,7 @@ pub async fn seal_one_level(
 ) -> Result<String> {
     crate::engine::seal_tree_level(config, tree, buffer, strategy, enqueue_follow_ups).await
 }
+
+#[cfg(test)]
+#[path = "bucket_seal_tests.rs"]
+mod tests;

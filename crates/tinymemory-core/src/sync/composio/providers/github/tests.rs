@@ -12,8 +12,11 @@ use super::provider::{
 use super::tools::GITHUB_CURATED;
 use super::GitHubProvider;
 use crate::sync::composio::providers::ComposioProvider;
-use crate::sync::composio::providers::{GithubFetchMode, TaskFetchFilter, TaskKind};
+use crate::sync::composio::providers::{
+    ComposioUsageHandle, GithubFetchMode, ProviderContext, TaskFetchFilter, TaskKind,
+};
 use serde_json::json;
+use std::sync::Arc;
 
 // ── extract_issues ───────────────────────────────────────────────────────────
 
@@ -608,4 +611,150 @@ fn normalize_keeps_open_item() {
     let nt = normalize_github_issue(&issue).expect("open item is kept");
     assert_eq!(nt.kind, TaskKind::Issue);
     assert_eq!(nt.status.as_deref(), Some("open"));
+}
+
+#[cfg(unix)]
+#[test]
+fn local_fetch_uses_gh_expands_me_and_normalizes_open_work() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _env = crate::test_env_lock::TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let previous_path = std::env::var_os("PATH");
+    let previous_gh = std::env::var_os("GH_TOKEN");
+    let previous_github = std::env::var_os("GITHUB_TOKEN");
+    struct RestoreEnv {
+        path: Option<std::ffi::OsString>,
+        gh: Option<std::ffi::OsString>,
+        github: Option<std::ffi::OsString>,
+    }
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            match self.path.take() {
+                Some(value) => std::env::set_var("PATH", value),
+                None => std::env::remove_var("PATH"),
+            }
+            match self.gh.take() {
+                Some(value) => std::env::set_var("GH_TOKEN", value),
+                None => std::env::remove_var("GH_TOKEN"),
+            }
+            match self.github.take() {
+                Some(value) => std::env::set_var("GITHUB_TOKEN", value),
+                None => std::env::remove_var("GITHUB_TOKEN"),
+            }
+        }
+    }
+    let _restore = RestoreEnv {
+        path: previous_path.clone(),
+        gh: previous_gh,
+        github: previous_github,
+    };
+
+    let temp = tempfile::tempdir().expect("fake gh directory");
+    let gh = temp.path().join("gh");
+    std::fs::write(
+        &gh,
+        r##"#!/bin/sh
+if [ "$1" = "api" ] && [ "$2" = "user" ]; then
+  printf '%s\n' 'octocat'
+  exit 0
+fi
+case "$*" in
+  *'assignee:octocat'*)
+    printf '%s\n' '{"items":[{"id":1,"title":"Closed","state":"closed","html_url":"https://github.com/o/r/issues/1"},{"id":2,"title":"Open issue","state":"open","body":"Issue body","html_url":"https://github.com/o/r/issues/2","labels":[{"name":"bug"}]},{"id":3,"title":"Open PR","state":"open","html_url":"https://github.com/o/r/pull/3","pull_request":{"url":"https://api.github.com/repos/o/r/pulls/3"}},{"id":4,"title":"Beyond max","state":"open","html_url":"https://github.com/o/r/issues/4"}]}'
+    exit 0
+    ;;
+  *)
+    printf '%s\n' 'query did not expand @me' >&2
+    exit 17
+    ;;
+esac
+"##,
+    )
+    .expect("write fake gh");
+    let mut permissions = std::fs::metadata(&gh)
+        .expect("fake gh metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&gh, permissions).expect("make fake gh executable");
+    let mut path = temp.path().as_os_str().to_os_string();
+    if let Some(previous) = previous_path {
+        path.push(":");
+        path.push(previous);
+    }
+    std::env::set_var("PATH", path);
+    std::env::remove_var("GH_TOKEN");
+    std::env::remove_var("GITHUB_TOKEN");
+
+    let ctx = ProviderContext {
+        config: Arc::new(tinymemory_api::host::test_support::TestHostConfig::default())
+            as Arc<crate::Config>,
+        toolkit: "github".into(),
+        connection_id: Some("connection-1".into()),
+        usage: ComposioUsageHandle::default(),
+        max_items: None,
+        sync_depth_days: None,
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime");
+    let tasks = runtime
+        .block_on(GitHubProvider::new().fetch_tasks(
+            &ctx,
+            &TaskFetchFilter {
+                assignee_is_me: true,
+                max: 2,
+                github_fetch_mode: GithubFetchMode::Local,
+                extra: json!({"custom": true}),
+                ..Default::default()
+            },
+        ))
+        .expect("local GitHub fetch");
+    assert_eq!(tasks.len(), 2);
+    assert_eq!(tasks[0].external_id, "2");
+    assert_eq!(tasks[0].kind, TaskKind::Issue);
+    assert_eq!(tasks[0].labels, vec!["bug"]);
+    assert_eq!(tasks[1].external_id, "3");
+    assert_eq!(tasks[1].kind, TaskKind::PullRequest);
+}
+
+#[tokio::test]
+async fn composio_provider_failures_name_the_action_without_network() {
+    use tinymemory_api::host::test_support::TestHostConfig;
+
+    let temp = tempfile::tempdir().expect("config directory");
+    let mut config = TestHostConfig::default();
+    config.config_path = temp.path().join("config.toml");
+    config.workspace_dir = temp.path().join("workspace");
+    config.secrets_encrypt = false;
+    tinymemory_api::host::MemoryHostConfig::save(&config)
+        .await
+        .expect("save unsigned config");
+    let ctx = ProviderContext {
+        config: Arc::new(config) as Arc<crate::Config>,
+        toolkit: "github".into(),
+        connection_id: Some("connection-1".into()),
+        usage: ComposioUsageHandle::default(),
+        max_items: None,
+        sync_depth_days: None,
+    };
+    let provider = GitHubProvider::new();
+    let profile_error = provider
+        .fetch_user_profile(&ctx)
+        .await
+        .expect_err("signed-out profile fetch");
+    assert!(profile_error.contains(ACTION_GET_AUTHENTICATED_USER));
+    let task_error = provider
+        .fetch_tasks(
+            &ctx,
+            &TaskFetchFilter {
+                github_fetch_mode: GithubFetchMode::Composio,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("signed-out task fetch");
+    assert!(task_error.contains(ACTION_SEARCH_ISSUES));
 }

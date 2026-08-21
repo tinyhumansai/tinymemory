@@ -168,3 +168,7 @@ pub trait Memory: Send + Sync {
         None
     }
 }
+
+#[cfg(test)]
+#[path = "traits_tests.rs"]
+mod tests;

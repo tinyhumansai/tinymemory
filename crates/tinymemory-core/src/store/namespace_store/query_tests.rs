@@ -1,13 +1,405 @@
 //! Tests for the `query` module — hybrid retrieval scoring.
 
+use super::{RelationMatch, RetrievalPlan, StoredChunk, TemporalOperator, UnifiedMemory};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use serde_json::json;
 use tempfile::TempDir;
 
-use crate::store::{NamespaceDocumentInput, UnifiedMemory};
+use crate::store::{
+    GraphRelationRecord, MemoryItemKind, NamespaceDocumentInput, NamespaceMemoryHit,
+    RetrievalScoreBreakdown,
+};
 use crate::Memory;
+use crate::MemoryTaint;
 use tinymemory_api::host::NoopEmbedding;
+
+#[test]
+fn retrieval_plan_helpers_cover_temporal_relation_and_chain_vocabulary() {
+    let terms = |values: &[&str]| {
+        values
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        UnifiedMemory::infer_temporal_operator(&terms(&["before"])),
+        TemporalOperator::Before
+    );
+    assert_eq!(
+        UnifiedMemory::infer_temporal_operator(&terms(&["after"])),
+        TemporalOperator::After
+    );
+    assert_eq!(
+        UnifiedMemory::infer_temporal_operator(&terms(&["history"])),
+        TemporalOperator::All
+    );
+    assert_eq!(
+        UnifiedMemory::infer_temporal_operator(&terms(&["earliest"])),
+        TemporalOperator::Earliest
+    );
+    assert_eq!(
+        UnifiedMemory::infer_temporal_operator(&terms(&["ordinary"])),
+        TemporalOperator::Latest
+    );
+
+    let relation_types = UnifiedMemory::infer_relation_types(&terms(&[
+        "where", "owner", "company", "north", "south", "east", "west", "sent",
+    ]));
+    for expected in [
+        "LOCATED_IN",
+        "RESIDES_AT",
+        "TRAVELS_TO",
+        "OWNS",
+        "USES",
+        "WORKS_FOR",
+        "NORTH_OF",
+        "SOUTH_OF",
+        "EAST_OF",
+        "WEST_OF",
+    ] {
+        assert!(relation_types.iter().any(|value| value == expected));
+    }
+    assert_eq!(
+        UnifiedMemory::infer_relation_chains(&terms(&["where"]), &relation_types).len(),
+        4
+    );
+    assert_eq!(
+        UnifiedMemory::infer_relation_chains(&terms(&["gave"]), &[]),
+        vec![vec!["USES".to_string()]]
+    );
+    assert_eq!(
+        UnifiedMemory::infer_relation_chains(&terms(&["who"]), &["OWNS".into()]),
+        vec![vec!["OWNS".to_string()]]
+    );
+    assert!(UnifiedMemory::infer_relation_chains(&terms(&["who"]), &[]).is_empty());
+    assert!(UnifiedMemory::predicate_matches_query(
+        "WORKS_FOR",
+        &terms(&["works"])
+    ));
+}
+
+#[test]
+fn score_normalization_and_priority_signals_are_bounded() {
+    assert!(UnifiedMemory::normalize_scores(HashMap::new()).is_empty());
+    assert!(UnifiedMemory::normalize_scores(HashMap::from([("zero".into(), 0.0)])).is_empty());
+    let normalized = UnifiedMemory::normalize_scores(HashMap::from([
+        ("top".into(), 4.0),
+        ("half".into(), 2.0),
+        ("negative".into(), -1.0),
+    ]));
+    assert_eq!(normalized["top"], 1.0);
+    assert_eq!(normalized["half"], 0.5);
+    assert_eq!(normalized["negative"], 0.0);
+
+    assert!(
+        (UnifiedMemory::document_priority_signal(
+            "core",
+            "critical",
+            &["decision".into()],
+            &json!({"kind": "profile"}),
+        ) - 1.0)
+            .abs()
+            < f64::EPSILON
+    );
+    assert_eq!(
+        UnifiedMemory::document_priority_signal("other", "normal", &[], &json!({})),
+        0.25
+    );
+    assert!(
+        UnifiedMemory::kv_priority_signal("user.preference.theme", &json!({"value": "dark"}))
+            > UnifiedMemory::kv_priority_signal("misc", &json!("plain"))
+    );
+    assert_eq!(UnifiedMemory::render_kv_value(&json!("text")), "text");
+    assert_eq!(UnifiedMemory::render_kv_value(&json!([1, 2])), "[1,2]");
+    assert_eq!(
+        UnifiedMemory::render_kv_value(&json!({"enabled": true})),
+        "{\"enabled\":true}"
+    );
+    assert_eq!(
+        UnifiedMemory::entity_label_with_type(
+            "Alice",
+            &json!({"entity_types": {"subject": "person"}}),
+            "subject",
+        ),
+        "Alice (person)"
+    );
+    assert_eq!(
+        UnifiedMemory::entity_label_with_type("Atlas", &json!({}), "object"),
+        "Atlas"
+    );
+}
+
+fn relation() -> GraphRelationRecord {
+    GraphRelationRecord {
+        namespace: Some("team".into()),
+        subject: "Alice".into(),
+        predicate: "OWNS".into(),
+        object: "Atlas".into(),
+        attrs: json!({"entity_types": {"subject": "person", "object": "project"}}),
+        updated_at: 42.8,
+        evidence_count: 2,
+        order_index: None,
+        document_ids: vec!["doc-1".into()],
+        chunk_ids: vec!["chunk-1".into()],
+    }
+}
+
+fn hit(kind: MemoryItemKind, key: &str, content: &str) -> NamespaceMemoryHit {
+    NamespaceMemoryHit {
+        id: format!("id:{key}"),
+        kind,
+        namespace: "team".into(),
+        key: key.into(),
+        title: None,
+        content: content.into(),
+        category: "core".into(),
+        source_type: None,
+        updated_at: 1.0,
+        score: 0.5,
+        score_breakdown: RetrievalScoreBreakdown::default(),
+        document_id: None,
+        chunk_id: None,
+        supporting_relations: Vec::new(),
+        taint: MemoryTaint::Internal,
+    }
+}
+
+#[test]
+fn relation_helpers_match_terms_identity_and_order_fallback() {
+    let mut relation = relation();
+    assert!(UnifiedMemory::relation_matches_terms(
+        &relation,
+        &["atlas".into()]
+    ));
+    assert!(!UnifiedMemory::relation_matches_terms(
+        &relation,
+        &["missing".into()]
+    ));
+    assert_eq!(
+        UnifiedMemory::relation_identity(&relation),
+        "team|Alice|OWNS|Atlas"
+    );
+    assert_eq!(UnifiedMemory::relation_order_value(&relation), 43);
+    relation.order_index = Some(7);
+    relation.namespace = None;
+    assert_eq!(UnifiedMemory::relation_order_value(&relation), 7);
+    assert_eq!(
+        UnifiedMemory::relation_identity(&relation),
+        "global|Alice|OWNS|Atlas"
+    );
+}
+
+#[test]
+fn context_formatting_covers_every_memory_kind_and_relation_labels() {
+    let mut document = hit(MemoryItemKind::Document, "doc", " document body ");
+    document.title = Some("Decision".into());
+    document.supporting_relations = vec![relation()];
+    let hits = vec![
+        document,
+        hit(MemoryItemKind::Kv, "preference", " dark "),
+        hit(MemoryItemKind::Episodic, "session", " remembered "),
+        hit(MemoryItemKind::Event, "decision", " selected "),
+    ];
+    let rendered = UnifiedMemory::format_context_text(&hits, Some("what changed"));
+    for expected in [
+        "Query: what changed",
+        "Decision: document body",
+        "[kv:preference] dark",
+        "[episodic:session] remembered",
+        "[event:decision] selected",
+        "Alice (person) -[OWNS]-> Atlas (project)",
+    ] {
+        assert!(
+            rendered.contains(expected),
+            "missing {expected}: {rendered}"
+        );
+    }
+    assert_eq!(
+        UnifiedMemory::format_context_text(&[hit(MemoryItemKind::Document, "doc", "body")], None),
+        "doc: body"
+    );
+}
+
+#[test]
+fn relation_planning_traversal_temporal_filters_and_scoring_cover_graph_branches() {
+    let tmp = TempDir::new().unwrap();
+    let memory = UnifiedMemory::new(tmp.path(), Arc::new(NoopEmbedding), None).unwrap();
+    let make_relation =
+        |subject: &str, predicate: &str, object: &str, order: i64, document: &str, chunk: &str| {
+            GraphRelationRecord {
+                namespace: Some("team".into()),
+                subject: subject.into(),
+                predicate: predicate.into(),
+                object: object.into(),
+                attrs: json!({}),
+                updated_at: order as f64,
+                evidence_count: order.max(1) as u32,
+                order_index: Some(order),
+                document_ids: vec![document.into()],
+                chunk_ids: vec![chunk.into()],
+            }
+        };
+    let relations = vec![
+        make_relation("Alice", "OWNS", "Atlas", 10, "doc-atlas", "chunk-atlas"),
+        make_relation(
+            "Atlas",
+            "LOCATED_IN",
+            "Paris",
+            20,
+            "doc-atlas",
+            "chunk-paris",
+        ),
+        make_relation("Alice", "OWNS", "Beta", 30, "doc-beta", "chunk-beta"),
+    ];
+    let all_plan = RetrievalPlan {
+        query_terms: vec!["alice".into(), "owns".into()],
+        seed_entities: vec!["Alice".into()],
+        relation_types: vec!["OWNS".into()],
+        chains: vec![vec!["OWNS".into(), "LOCATED_IN".into()]],
+        temporal: TemporalOperator::All,
+        anchor_entity: None,
+    };
+
+    let direct = memory.direct_relation_matches(&all_plan, &relations);
+    assert_eq!(direct.len(), 2);
+    let chained = memory.multi_hop_relation_matches(&all_plan, &relations);
+    assert_eq!(chained.len(), 3);
+    let collected = memory.collect_relation_matches(&all_plan, &relations);
+    assert_eq!(
+        collected.len(),
+        3,
+        "direct and chain duplicates are removed"
+    );
+
+    let mut no_chain = all_plan.clone();
+    no_chain.chains.clear();
+    assert!(memory
+        .multi_hop_relation_matches(&no_chain, &relations)
+        .is_empty());
+    no_chain.chains = vec![vec!["MISSING".into()]];
+    assert!(memory
+        .multi_hop_relation_matches(&no_chain, &relations)
+        .is_empty());
+
+    let relation_matches = relations
+        .iter()
+        .cloned()
+        .map(|relation| RelationMatch { relation, hop: 1 })
+        .collect::<Vec<_>>();
+    let mut earliest = all_plan.clone();
+    earliest.temporal = TemporalOperator::Earliest;
+    let earliest_matches =
+        UnifiedMemory::apply_temporal_filter(&earliest, None, relation_matches.clone());
+    assert_eq!(earliest_matches.len(), 2);
+    assert!(earliest_matches
+        .iter()
+        .any(|item| item.relation.order_index == Some(10)));
+
+    let mut before = all_plan.clone();
+    before.temporal = TemporalOperator::Before;
+    before.anchor_entity = Some("Paris".into());
+    assert_eq!(memory.resolve_anchor_order(&before, &relations), Some(20));
+    let before_matches =
+        UnifiedMemory::apply_temporal_filter(&before, Some(20), relation_matches.clone());
+    assert_eq!(before_matches.len(), 1);
+    assert_eq!(before_matches[0].relation.object, "Atlas");
+
+    let mut after = before.clone();
+    after.temporal = TemporalOperator::After;
+    assert_eq!(memory.resolve_anchor_order(&after, &relations), Some(20));
+    let after_matches = UnifiedMemory::apply_temporal_filter(&after, Some(20), relation_matches);
+    assert_eq!(after_matches.len(), 1);
+    assert_eq!(after_matches[0].relation.object, "Beta");
+
+    let chunks = vec![StoredChunk {
+        document_id: "doc-atlas".into(),
+        chunk_id: "chunk-paris".into(),
+        embedding: None,
+        model_signature: None,
+    }];
+    let graph_scores = memory.compute_graph_document_scores(&[], &chunks, &collected);
+    assert!(graph_scores.get("doc-atlas").copied().unwrap_or_default() > 0.7);
+    assert!(graph_scores.contains_key("doc-beta"));
+    let supporting = memory.supporting_relations_for_document(
+        "doc-atlas",
+        "Alice owns Atlas in Paris",
+        &collected,
+    );
+    assert_eq!(supporting.len(), 3);
+    assert!(
+        memory.document_recall_graph_signal("doc-atlas", "Alice owns Atlas", &relations,) > 0.0
+    );
+
+    assert_eq!(memory.keyword_score_for_text(&[], &["anything"]), 0.0);
+    assert_eq!(memory.keyword_score_for_text(&["alice".into()], &[""]), 0.0);
+    assert_eq!(
+        memory.keyword_score_for_text(&["alice".into(), "missing".into()], &["Alice owns Atlas"]),
+        0.5
+    );
+    let composed = UnifiedMemory::compose_query_score(0.5, 0.25, 1.0);
+    assert_eq!(composed.graph_relevance, 1.0);
+    assert!(composed.final_score > 0.6);
+    let fallback = UnifiedMemory::compose_fallback_query_score(0.5, 0.25);
+    assert_eq!(fallback.graph_relevance, 0.0);
+    assert!(fallback.final_score > 0.0);
+}
+
+#[tokio::test]
+async fn retrieval_plan_matches_document_and_graph_entities_and_selects_last_anchor() {
+    let tmp = TempDir::new().unwrap();
+    let memory = UnifiedMemory::new(tmp.path(), Arc::new(NoopEmbedding), None).unwrap();
+    memory
+        .upsert_document(NamespaceDocumentInput {
+            namespace: "team".into(),
+            key: "Project Atlas".into(),
+            title: "Atlas Launch".into(),
+            content: "Alice moved Atlas from London to Paris.".into(),
+            source_type: "doc".into(),
+            priority: "medium".into(),
+            tags: vec![],
+            metadata: json!({}),
+            category: "core".into(),
+            session_id: None,
+            document_id: None,
+            taint: MemoryTaint::Internal,
+        })
+        .await
+        .unwrap();
+    let docs = memory.load_documents_for_scope("team").await.unwrap();
+    let relations = vec![
+        GraphRelationRecord {
+            subject: "Atlas".into(),
+            predicate: "LOCATED_IN".into(),
+            object: "London".into(),
+            ..relation()
+        },
+        GraphRelationRecord {
+            subject: "Atlas".into(),
+            predicate: "TRAVELS_TO".into(),
+            object: "Paris".into(),
+            ..relation()
+        },
+    ];
+
+    let plan =
+        memory.build_retrieval_plan("where was Project Atlas before Paris", &docs, &relations);
+    assert_eq!(plan.temporal, TemporalOperator::Before);
+    assert_eq!(plan.anchor_entity.as_deref(), Some("Paris"));
+    assert!(plan.seed_entities.iter().any(|entity| entity == "Atlas"));
+    assert!(plan
+        .relation_types
+        .iter()
+        .any(|predicate| predicate == "LOCATED_IN"));
+    assert!(!plan.chains.is_empty());
+
+    assert_eq!(memory.resolve_anchor_entity("anything", &[]), None);
+    assert_eq!(
+        memory.resolve_anchor_entity("Alice then Bob", &["".into(), "Alice".into(), "Bob".into()]),
+        Some("Bob".into())
+    );
+}
 
 #[tokio::test]
 async fn graph_duplicate_upsert_aggregates_evidence_count() {

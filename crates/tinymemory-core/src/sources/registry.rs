@@ -23,9 +23,11 @@ pub(crate) async fn memory_sources_write_guard() -> tokio::sync::MutexGuard<'sta
 
 async fn registry() -> Result<tinymemory_sources::registry::SourceRegistry, String> {
     let config = config_rpc::load_config_with_timeout().await?;
-    Ok(tinymemory_sources::registry::SourceRegistry::new(
-        config.config_path(),
-    ))
+    Ok(registry_in(&*config))
+}
+
+fn registry_in(config: &crate::Config) -> tinymemory_sources::registry::SourceRegistry {
+    tinymemory_sources::registry::SourceRegistry::new(config.config_path().clone())
 }
 
 pub async fn list_sources() -> Result<Vec<MemorySourceEntry>, String> {
@@ -62,7 +64,7 @@ pub fn get_source_in(
     config: &crate::Config,
     id: &str,
 ) -> Result<Option<MemorySourceEntry>, String> {
-    tinymemory_sources::registry::SourceRegistry::new(config.config_path().clone())
+    registry_in(config)
         .get(id)
         .map_err(|error| error.to_string())
 }
@@ -191,3 +193,7 @@ pub fn decode_memory_sources(config: &crate::Config) -> Vec<MemorySourceEntry> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "registry_tests.rs"]
+mod tests;

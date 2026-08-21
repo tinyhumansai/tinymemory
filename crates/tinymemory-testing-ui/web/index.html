@@ -248,7 +248,6 @@
             <option value="external_sync" selected>external_sync</option>
           </select>
         </div>
-        <div><label for="upload-session">Session ID (optional)</label><input id="upload-session"></div>
       </div>
       <label for="upload-files">Files</label>
       <input id="upload-files" type="file" multiple>
@@ -331,6 +330,7 @@
   </section>
 </main>
 
+<script src="/workflows.js"></script>
 <script>
 const API = "/api";
 const $ = (id) => document.getElementById(id);
@@ -574,41 +574,15 @@ $("store-btn").addEventListener("click", () => run(async () => {
   return "stored";
 }));
 
-function readFileAsText(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(reader.error || new Error("failed to read " + file.name));
-    reader.readAsText(file);
-  });
-}
-
-$("upload-btn").addEventListener("click", () => run(async () => {
-  const files = Array.from($("upload-files").files || []);
-  if (files.length === 0) throw new Error("choose at least one file first");
-
-  const namespace = $("upload-namespace").value || "documents";
-  const category = $("upload-category").value;
-  const taint = $("upload-taint").value;
-  const session_id = $("upload-session").value || null;
-
-  const results = [];
-  for (const file of files) {
-    try {
-      const content = await readFileAsText(file);
-      if (!content.trim()) throw new Error("file is empty (or not text)");
-      await call("/store", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ namespace, key: file.name, content, category, taint, session_id }),
-      });
-      results.push({ file: file.name, bytes: file.size, status: "stored" });
-    } catch (e) {
-      results.push({ file: file.name, bytes: file.size, status: "error: " + e.message });
-    }
-  }
-  return results;
-}));
+TinyMemoryWorkflows.wireUpload({
+  button: $("upload-btn"),
+  filesInput: $("upload-files"),
+  namespaceInput: $("upload-namespace"),
+  categoryInput: $("upload-category"),
+  taintInput: $("upload-taint"),
+  run,
+  call,
+});
 
 $("get-btn").addEventListener("click", () => run(() =>
   call("/get" + qs({ namespace: $("get-namespace").value, key: $("get-key").value }))

@@ -1,6 +1,6 @@
 //! The real thing: a `dlopen`ed `cdylib`, a real broker, a real store.
 //!
-//! # Why every test here is `#[ignore]`d
+//! # Why loader cases are marked `#[ignore]`
 //!
 //! Not flakiness — a runtime constraint that cannot be worked around inside a
 //! single test binary.
@@ -13,7 +13,9 @@
 //! it fires rather than failing cleanly.
 //!
 //! So a test that drives a real module must be the only one running in its
-//! process. Run them one at a time:
+//! process. [`all_loader_cases_run_in_isolated_processes`] is part of the normal
+//! suite and re-executes this test binary once per ignored loader case. To run a
+//! single case manually:
 //!
 //! ```sh
 //! # Both paths are the module's own workspace, not the repo root: this crate is
@@ -44,7 +46,8 @@ use tinybus::{Connection, Result as BusResult};
 use tinymemory_api::capabilities::{Capabilities, Capability};
 use tinymemory_api::types::{MemoryCategory, MemoryEntry, MemoryTaint};
 use tinymemory_module::{
-    BUS_NAME, EMBEDDING_HOST_BUS_NAME, EMBEDDING_HOST_OBJECT_PATH, OBJECT_PATH,
+    BUS_NAME, CHAT_HOST_BUS_NAME, CHAT_HOST_OBJECT_PATH, EMBEDDING_HOST_BUS_NAME,
+    EMBEDDING_HOST_OBJECT_PATH, OBJECT_PATH,
 };
 
 /// The interface the module dispatches on.
@@ -61,25 +64,96 @@ const DIMS: usize = 8;
 /// is not shared between tests in practice.
 static EMBED_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+const LOADER_CASES: &[&str] = &[
+    "the_module_advertises_the_complete_tinymemory_api",
+    "an_entry_stored_over_the_bus_is_read_back",
+    "a_missing_entry_is_none_and_not_an_error",
+    "recall_reaches_the_host_embedder",
+    "an_export_page_terminates_on_a_none_cursor",
+    "a_rejected_request_comes_back_under_its_contract_name",
+    "the_module_matches_the_in_process_engine_for_the_same_input",
+    "the_manifest_declares_every_method_the_module_serves",
+    "what_is_written_lands_in_the_workspace_it_was_given",
+    "every_declared_method_is_actually_routed",
+    "stateful_optional_families_round_trip_over_the_bus",
+    "query_and_maintenance_families_dispatch_typed_requests",
+];
+
+#[test]
+fn all_loader_cases_run_in_isolated_processes() {
+    let test_binary = std::env::current_exe().expect("current test executable");
+    let artifact = std::env::var_os("TINYMEMORY_TEST_MODULE").unwrap_or_else(|| {
+        test_binary
+            .parent()
+            .expect("test executable lives under target/<profile>/deps")
+            .join(format!(
+                "{}tinymemory_module{}",
+                std::env::consts::DLL_PREFIX,
+                std::env::consts::DLL_SUFFIX
+            ))
+            .into_os_string()
+    });
+    assert!(
+        std::path::Path::new(&artifact).is_file(),
+        "module artifact does not exist at {}",
+        std::path::Path::new(&artifact).display()
+    );
+
+    for case in LOADER_CASES {
+        let status = std::process::Command::new(&test_binary)
+            .args(["--ignored", "--exact", case, "--nocapture"])
+            .env("TINYMEMORY_TEST_MODULE", &artifact)
+            .status()
+            .unwrap_or_else(|error| panic!("could not run {case}: {error}"));
+        assert!(status.success(), "isolated loader case {case} failed");
+    }
+}
+
 /// Stands in for the host's embedder so recall has something to work with.
 ///
 /// Deterministic rather than random: a recall assertion that depended on a
 /// random vector would pass or fail for reasons unrelated to the module.
 struct HostEmbedder;
 
+struct HostChat;
+
+#[tinybus::interface(name = "ai.tinyhumans.tinymemory.ChatHost")]
+impl HostChat {
+    async fn complete(
+        &self,
+        _role: String,
+        _request: tinyagents::harness::model::ModelRequest,
+    ) -> BusResult<tinyagents::harness::model::ModelResponse> {
+        use tinyagents::harness::message::{AssistantMessage, ContentBlock};
+        use tinyagents::harness::usage::Usage;
+
+        std::future::ready(()).await;
+        Ok(tinyagents::harness::model::ModelResponse {
+            message: AssistantMessage {
+                id: None,
+                content: vec![ContentBlock::Text("deterministic summary".into())],
+                tool_calls: Vec::new(),
+                usage: Some(Usage::new(2, 1)),
+            },
+            usage: Some(Usage::new(2, 1)),
+            finish_reason: Some("stop".into()),
+            raw: None,
+            resolved_model: None,
+            continue_turn: None,
+            served_from_cache: false,
+        })
+    }
+}
+
 #[tinybus::interface(name = "ai.tinyhumans.tinymemory.EmbeddingHost")]
 impl HostEmbedder {
-    #[allow(
-        clippy::unused_async,
-        clippy::unused_async_trait_impl,
-        reason = "the interface macro requires async"
-    )]
     async fn embed(
         &self,
         _model: String,
         _dimensions: usize,
         texts: Vec<String>,
     ) -> BusResult<Vec<Vec<f32>>> {
+        std::future::ready(()).await;
         EMBED_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         // A crude content-derived vector: enough that identical text embeds
         // identically and different text does not, which is all recall needs
@@ -138,6 +212,17 @@ async fn admit_module_detailed(
         .request_name(EMBEDDING_HOST_BUS_NAME)
         .await
         .expect("claim embedder name");
+    host_side
+        .serve_at(
+            CHAT_HOST_OBJECT_PATH.try_into().expect("valid chat path"),
+            HostChat,
+        )
+        .await
+        .expect("serve chat host");
+    host_side
+        .request_name(CHAT_HOST_BUS_NAME)
+        .await
+        .expect("claim chat host name");
     // Deliberately leaked: dropping this releases the well-known name, and the
     // module needs it for the whole test.
     std::mem::forget(host_side);
@@ -155,11 +240,20 @@ async fn admit_module_detailed(
     // are content-derived noise, not real semantics; the default 0.4 floor would
     // filter out a correct match for reasons that have nothing to do with the
     // module.
+    let diff_source = workspace.join("diff-source");
+    std::fs::create_dir_all(&diff_source).expect("create diff source fixture");
     let config = serde_json::json!({
         "workspace_dir": workspace,
         "cloud_embedding_model": "e2e-model",
         "cloud_embedding_dimensions": DIMS,
         "models_supporting_dimensions": ["e2e-model"],
+        "memory_sources": [{
+            "id": "src_diff",
+            "kind": "folder",
+            "label": "Diff source",
+            "enabled": true,
+            "path": diff_source,
+        }],
         "memory": {
             "embedding_provider": "cloud",
             "embedding_model": "e2e-model",
@@ -729,4 +823,614 @@ async fn every_declared_method_is_actually_routed() {
         missing.is_empty(),
         "declared in the manifest but not routed: {missing:?}"
     );
+}
+
+#[tokio::test]
+#[ignore = "drives a real dlopen'ed module; must be the only such test in the process — see the module docs"]
+async fn stateful_optional_families_round_trip_over_the_bus() {
+    let workspace = tempfile::tempdir().expect("tempdir");
+    let (client, _host, _task) = admit_module(workspace.path()).await;
+    let bus = proxy(&client);
+
+    documents_and_graph_round_trip(&bus).await;
+    goals_tools_and_sources_round_trip(&bus).await;
+    people_and_profile_round_trip(&bus).await;
+    episodic_round_trip(&bus).await;
+}
+
+async fn documents_and_graph_round_trip(bus: &tinybus::Proxy) {
+    use tinymemory_api::types::{GraphRelationRecord, MemoryKvRecord, NamespaceDocumentInput};
+
+    let document = NamespaceDocumentInput {
+        namespace: "project".into(),
+        key: "brief".into(),
+        title: "Brief".into(),
+        content: "Ship deterministic module coverage".into(),
+        source_type: "upload".into(),
+        priority: "high".into(),
+        tags: vec!["coverage".into()],
+        metadata: serde_json::json!({"ticket": 81}),
+        category: "core".into(),
+        session_id: Some("session-1".into()),
+        document_id: None,
+        taint: MemoryTaint::ExternalSync,
+    };
+    let document_id: String = bus
+        .call("PutDocument", (document,))
+        .await
+        .expect("PutDocument");
+    let stored: Option<tinymemory_api::types::StoredMemoryDocument> = bus
+        .call("GetDocument", ("project", "brief"))
+        .await
+        .expect("GetDocument");
+    assert_eq!(stored.expect("stored document").document_id, document_id);
+    let _: serde_json::Value = bus
+        .call("ListDocuments", (Some("project"),))
+        .await
+        .expect("ListDocuments");
+    let namespaces: Vec<String> = bus
+        .call("ListNamespaces", ())
+        .await
+        .expect("ListNamespaces");
+    assert!(namespaces.contains(&"project".to_string()));
+    let _: tinymemory_api::types::NamespaceRetrievalContext = bus
+        .call("QueryDocuments", ("project", "coverage", 8_usize))
+        .await
+        .expect("QueryDocuments");
+    let _: tinymemory_api::types::NamespaceRetrievalContext = bus
+        .call("RecallDocuments", ("project", 8_usize))
+        .await
+        .expect("RecallDocuments");
+
+    bus.call::<()>(
+        "KvPut",
+        (Some("project"), "status", serde_json::json!("green")),
+    )
+    .await
+    .expect("KvPut");
+    let kv: Option<MemoryKvRecord> = bus
+        .call("KvGet", (Some("project"), "status"))
+        .await
+        .expect("KvGet");
+    assert_eq!(kv.expect("KV row").value, serde_json::json!("green"));
+    let listed: Vec<MemoryKvRecord> = bus
+        .call("KvList", (Some("project"), Some("status"), 8_usize))
+        .await
+        .expect("KvList");
+    assert_eq!(listed.len(), 1);
+    let relation = GraphRelationRecord {
+        namespace: Some("project".into()),
+        subject: "suite".into(),
+        predicate: "covers".into(),
+        object: "adapter".into(),
+        attrs: serde_json::json!({"confidence": 1.0}),
+        updated_at: 0.0,
+        evidence_count: 0,
+        order_index: None,
+        document_ids: Vec::new(),
+        chunk_ids: Vec::new(),
+    };
+    bus.call::<()>("PutRelation", (relation,))
+        .await
+        .expect("PutRelation");
+    let relations: Vec<GraphRelationRecord> = bus
+        .call(
+            "Relations",
+            (Some("project"), Some("suite"), Some("covers"), 8_usize),
+        )
+        .await
+        .expect("Relations");
+    assert_eq!(relations.len(), 1);
+
+    let _: serde_json::Value = bus
+        .call("DeleteDocument", ("project", document_id))
+        .await
+        .expect("DeleteDocument");
+    assert!(bus
+        .call::<bool>("KvDelete", (Some("project"), "status"))
+        .await
+        .expect("KvDelete"));
+    bus.call::<()>("ClearNamespace", ("project",))
+        .await
+        .expect("ClearNamespace");
+}
+
+async fn goals_tools_and_sources_round_trip(bus: &tinybus::Proxy) {
+    use tinymemory_api::goals::{GoalItem, GoalsDoc};
+    use tinymemory_api::provider::types::SourceItem;
+    use tinymemory_api::tool_memory::{ToolMemoryPriority, ToolMemoryRule, ToolMemorySource};
+
+    let goals = GoalsDoc {
+        items: vec![GoalItem::new("g1", "finish coverage")],
+    };
+    bus.call::<()>("SetGoals", (goals.clone(),))
+        .await
+        .expect("SetGoals");
+    let actual_goals: GoalsDoc = bus.call("Goals", ()).await.expect("Goals");
+    assert_eq!(actual_goals, goals);
+    let rule = ToolMemoryRule::new(
+        "shell",
+        "never delete broad paths",
+        ToolMemoryPriority::Critical,
+        ToolMemorySource::UserExplicit,
+    );
+    let rule_id = rule.id.clone();
+    bus.call::<()>("PutToolRule", (rule,))
+        .await
+        .expect("PutToolRule");
+    let rules: Vec<ToolMemoryRule> = bus.call("ToolRules", ("shell",)).await.expect("ToolRules");
+    assert_eq!(rules.len(), 1);
+    assert!(bus
+        .call::<bool>("DeleteToolRule", ("shell", rule_id))
+        .await
+        .expect("DeleteToolRule"));
+
+    let source = SourceItem {
+        item_id: "item-1".into(),
+        title: "Source item".into(),
+        content: "source body".into(),
+        mime: Some("text/plain".into()),
+        url: Some("https://example.invalid/item-1".into()),
+        updated_at_ms: Some(42),
+        tags: vec!["source".into()],
+    };
+    let outcome: tinymemory_api::provider::types::IngestOutcome = bus
+        .call(
+            "AcceptSourceItems",
+            ("drive-1", "drive", vec![source], MemoryTaint::ExternalSync),
+        )
+        .await
+        .expect("AcceptSourceItems");
+    assert_eq!(outcome.written, 1);
+    let forgotten: u64 = bus
+        .call("ForgetSource", ("drive-1",))
+        .await
+        .expect("ForgetSource");
+    assert_eq!(forgotten, 1);
+}
+
+async fn people_and_profile_round_trip(bus: &tinybus::Proxy) {
+    use tinymemory_api::provider::people::{PersonHandle, PersonInteraction, ResolvedPerson};
+    use tinymemory_api::provider::profile::{FacetType, UserState};
+
+    let handle = PersonHandle::Email("friend@example.com".into());
+    let resolved: Option<ResolvedPerson> = bus
+        .call("ResolveHandle", (handle.clone(), true))
+        .await
+        .expect("ResolveHandle");
+    let person = resolved.expect("created person");
+    bus.call::<()>(
+        "AddHandleAlias",
+        (
+            person.id.clone(),
+            PersonHandle::Email("alias@example.com".into()),
+        ),
+    )
+    .await
+    .expect("AddHandleAlias");
+    let _: Option<tinymemory_api::provider::people::PersonRecord> = bus
+        .call("GetPerson", (person.id.clone(),))
+        .await
+        .expect("GetPerson");
+    bus.call::<()>(
+        "RecordInteraction",
+        (PersonInteraction {
+            person_id: person.id.clone(),
+            at: "2026-08-21T00:00:00Z".into(),
+            is_outbound: true,
+            length: 120,
+        },),
+    )
+    .await
+    .expect("RecordInteraction");
+    let _: Option<tinymemory_api::provider::people::PersonScore> = bus
+        .call("ScorePerson", (person.id.clone(),))
+        .await
+        .expect("ScorePerson");
+    let _: Vec<tinymemory_api::provider::people::RankedPerson> = bus
+        .call("ListPeople", (Some(8_usize),))
+        .await
+        .expect("ListPeople");
+    let _: tinymemory_api::provider::people::AddressBookSeedOutcome = bus
+        .call("SeedFromAddressBook", ())
+        .await
+        .expect("SeedFromAddressBook");
+
+    bus.call::<()>(
+        "UpsertProviderFacet",
+        (
+            "facet-1",
+            FacetType::Preference,
+            "style/verbosity",
+            "concise",
+            0.9_f64,
+            Some("segment-1"),
+            100.0_f64,
+        ),
+    )
+    .await
+    .expect("UpsertProviderFacet");
+    let facet: Option<tinymemory_api::provider::profile::ProfileFacet> = bus
+        .call("GetFacet", ("style/verbosity",))
+        .await
+        .expect("GetFacet");
+    let facet = facet.expect("facet");
+    let _: Vec<tinymemory_api::provider::profile::ProfileFacet> = bus
+        .call("ListActiveFacets", ())
+        .await
+        .expect("ListActiveFacets");
+    let _: Vec<tinymemory_api::provider::profile::ProfileFacet> =
+        bus.call("ListAllFacets", ()).await.expect("ListAllFacets");
+    let _: Vec<tinymemory_api::provider::profile::ProfileFacet> = bus
+        .call("FacetsByType", (FacetType::Preference,))
+        .await
+        .expect("FacetsByType");
+    assert!(bus
+        .call::<bool>("SetFacetUserState", ("style/verbosity", UserState::Pinned),)
+        .await
+        .expect("SetFacetUserState"));
+    let _: bool = bus
+        .call("WorkflowIdentityMatches", ("style/*", "concise"))
+        .await
+        .expect("WorkflowIdentityMatches");
+    assert!(bus
+        .call::<bool>("DeleteFacetById", (facet.facet_id,))
+        .await
+        .expect("DeleteFacetById"));
+    let _: usize = bus
+        .call("DropFacetsBelow", (0.5_f64,))
+        .await
+        .expect("DropFacetsBelow");
+}
+
+async fn episodic_round_trip(bus: &tinybus::Proxy) {
+    use tinymemory_api::provider::EpisodicTurn;
+
+    let turn = EpisodicTurn {
+        id: None,
+        session_id: "session-1".into(),
+        timestamp: 10.0,
+        role: "user".into(),
+        content: "remember the test".into(),
+        lesson: Some("verify state".into()),
+        tool_calls_json: None,
+        cost_microdollars: 1,
+    };
+    let turn_id: i64 = bus.call("InsertTurn", (turn,)).await.expect("InsertTurn");
+    let _: Vec<EpisodicTurn> = bus
+        .call("SessionTurns", ("session-1",))
+        .await
+        .expect("SessionTurns");
+    bus.call::<()>(
+        "CreateSegment",
+        ("seg-1", "session-1", "global", turn_id, 10.0_f64, 10.0_f64),
+    )
+    .await
+    .expect("CreateSegment");
+    bus.call::<()>("AppendTurn", ("seg-1", turn_id, 10.0_f64, 11.0_f64))
+        .await
+        .expect("AppendTurn");
+    let _: Option<tinymemory_api::provider::episodic::ConversationSegment> = bus
+        .call("OpenSegment", ("session-1",))
+        .await
+        .expect("OpenSegment");
+    bus.call::<()>("CloseSegment", ("seg-1", 13.0_f64))
+        .await
+        .expect("CloseSegment");
+    bus.call::<()>("SetSegmentSummary", ("seg-1", "summary", 14.0_f64))
+        .await
+        .expect("SetSegmentSummary");
+    bus.call::<()>(
+        "UpsertSegmentEmbedding",
+        ("seg-1", "test:8", vec![0.0_f32; DIMS], 15.0_f64),
+    )
+    .await
+    .expect("UpsertSegmentEmbedding");
+}
+
+#[tokio::test]
+#[ignore = "drives a real dlopen'ed module; must be the only such test in the process — see the module docs"]
+async fn query_and_maintenance_families_dispatch_typed_requests() {
+    let workspace = tempfile::tempdir().expect("tempdir");
+    let (client, _host, _task) = admit_module(workspace.path()).await;
+    let bus = proxy(&client);
+
+    let chunk_id = ingest_and_chunks_round_trip(&bus).await;
+    retrieval_round_trip(&bus, chunk_id).await;
+    tree_and_entities_round_trip(&bus).await;
+    maintenance_and_diff_round_trip(&bus).await;
+    portability_and_lifecycle_round_trip(&bus).await;
+}
+
+async fn ingest_and_chunks_round_trip(bus: &tinybus::Proxy) -> String {
+    use tinymemory_api::chunks::DataSource;
+    use tinymemory_api::provider::chunks::{ChunkDetail, ChunkEmbedding, ChunkQuery};
+    use tinymemory_api::provider::types::{IngestItem, IngestOutcome};
+
+    let ingest = IngestItem {
+        namespace: Some("project".into()),
+        source: DataSource::Upload,
+        source_id: "mem_src:src_diff:item-1".into(),
+        owner: "owner".into(),
+        source_ref: None,
+        content: "Alice maintains the TinyMemory adapter in Kuwait.".into(),
+        mime: Some("text/plain".into()),
+        timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0),
+        tags: vec!["coverage".into()],
+        taint: MemoryTaint::Internal,
+        path_scope: None,
+    };
+    let outcome: IngestOutcome = bus
+        .call("IngestDocument", (ingest,))
+        .await
+        .expect("IngestDocument");
+    assert!(outcome.written > 0);
+    let empty: IngestOutcome = bus
+        .call("IngestChat", (Vec::<IngestItem>::new(),))
+        .await
+        .expect("IngestChat");
+    assert!(empty.ids.is_empty());
+
+    let chunks: Vec<tinymemory_api::chunks::Chunk> = bus
+        .call(
+            "ListChunks",
+            (
+                ChunkQuery::default(),
+                Option::<tinymemory_api::provider::types::SourceScope>::None,
+            ),
+        )
+        .await
+        .expect("ListChunks");
+    assert!(!chunks.is_empty());
+    let chunk_id = outcome.ids[0].clone();
+    let _: Option<tinymemory_api::chunks::Chunk> = bus
+        .call("GetChunk", (chunk_id.clone(),))
+        .await
+        .expect("GetChunk");
+    let _: Option<ChunkDetail> = bus
+        .call("ChunkDetail", (chunk_id.clone(),))
+        .await
+        .expect("ChunkDetail");
+    let kinds: Vec<String> = bus.call("StorageKinds", ()).await.expect("StorageKinds");
+    assert!(!kinds.is_empty());
+    let _: Vec<ChunkEmbedding> = bus
+        .call("ChunkEmbeddings", (vec![chunk_id.clone()], "test:8"))
+        .await
+        .expect("ChunkEmbeddings");
+
+    chunk_id
+}
+
+async fn retrieval_round_trip(bus: &tinybus::Proxy, chunk_id: String) {
+    use tinymemory_api::provider::retrieval::{
+        CoverWindowQuery, FastRetrieveQuery, RetrievalHit, RetrievalResponse, SourceRetrievalQuery,
+    };
+
+    let leaves: Vec<RetrievalHit> = bus
+        .call(
+            "RetrieveLeaves",
+            (
+                vec![chunk_id.clone()],
+                Option::<tinymemory_api::provider::types::SourceScope>::None,
+            ),
+        )
+        .await
+        .expect("RetrieveLeaves");
+    assert!(!leaves.is_empty());
+    let _: RetrievalResponse = bus
+        .call(
+            "FastRetrieve",
+            (
+                "TinyMemory adapter",
+                FastRetrieveQuery {
+                    limit: 8,
+                    max_hops: 1,
+                    time_window_days: None,
+                },
+                Option::<tinymemory_api::provider::types::SourceScope>::None,
+            ),
+        )
+        .await
+        .expect("FastRetrieve");
+    let _: RetrievalResponse = bus
+        .call(
+            "CoverWindow",
+            (
+                CoverWindowQuery {
+                    since_ms: 0,
+                    until_ms: i64::MAX,
+                    source_id: None,
+                    source_kind: None,
+                    limit: Some(8),
+                },
+                Option::<tinymemory_api::provider::types::SourceScope>::None,
+            ),
+        )
+        .await
+        .expect("CoverWindow");
+    let _: RetrievalResponse = bus
+        .call(
+            "RetrieveSource",
+            (
+                SourceRetrievalQuery {
+                    source_id: Some("mem_src:src_diff:item-1".into()),
+                    source_kind: None,
+                    time_window_days: None,
+                    query: None,
+                    limit: 8,
+                },
+                Option::<tinymemory_api::provider::types::SourceScope>::None,
+            ),
+        )
+        .await
+        .expect("RetrieveSource");
+    let _: Vec<RetrievalHit> = bus
+        .call(
+            "RetrieveChildren",
+            (
+                "root",
+                1_u32,
+                Option::<String>::None,
+                Some(8_usize),
+                Option::<tinymemory_api::provider::types::SourceScope>::None,
+            ),
+        )
+        .await
+        .expect("RetrieveChildren");
+    let _: Vec<tinymemory_api::types::NamespaceMemoryHit> = bus
+        .call(
+            "RecallNamespaceScored",
+            ("project", "adapter", 8_usize, Option::<String>::None),
+        )
+        .await
+        .expect("RecallNamespaceScored");
+    let _: Vec<tinymemory_api::provider::retrieval::EntityMatch> = bus
+        .call(
+            "SearchEntities",
+            ("Alice", Option::<Vec<String>>::None, 8_usize),
+        )
+        .await
+        .expect("SearchEntities");
+}
+
+async fn tree_and_entities_round_trip(bus: &tinybus::Proxy) {
+    use tinymemory_api::tree::{IngestRequest, TreeStatus};
+
+    bus.call::<()>(
+        "Append",
+        (IngestRequest {
+            namespace: "tree-project".into(),
+            content: "A deterministic tree buffer entry".into(),
+            timestamp: chrono::DateTime::from_timestamp(1_700_000_000, 0),
+            metadata: Some(serde_json::json!({"source": "test"})),
+        },),
+    )
+    .await
+    .expect("Append");
+    let _: Vec<tinymemory_api::chunks::Chunk> = bus
+        .call(
+            "QuerySource",
+            (
+                "tree-project",
+                "mem_src:src_diff:item-1",
+                8_usize,
+                Option::<tinymemory_api::provider::types::SourceScope>::None,
+            ),
+        )
+        .await
+        .expect("QuerySource");
+    let sealed: TreeStatus = bus.call("Seal", ("tree-project",)).await.expect("Seal");
+    assert!(sealed.total_nodes > 0);
+    let cascaded: TreeStatus = bus
+        .call("Cascade", ("tree-project",))
+        .await
+        .expect("Cascade");
+    assert_eq!(cascaded.namespace, "tree-project");
+    let drill: Result<tinymemory_api::tree::QueryResult, _> =
+        bus.call("DrillDown", ("empty-tree", "missing")).await;
+    assert!(drill.is_err(), "missing tree nodes must be named errors");
+
+    let _: Vec<tinymemory_api::provider::types::EntityHit> = bus
+        .call("Entities", ("project", Some("Alice"), 8_usize))
+        .await
+        .expect("Entities");
+    let _: Vec<tinymemory_api::types::GraphRelationRecord> = bus
+        .call("EntityEdges", ("project", "person:alice", 8_usize))
+        .await
+        .expect("EntityEdges");
+    bus.call::<()>("TouchEntities", ("project", vec!["person:alice"]))
+        .await
+        .expect("TouchEntities");
+}
+
+async fn maintenance_and_diff_round_trip(bus: &tinybus::Proxy) {
+    use tinymemory_api::chunks::DataSource;
+    use tinymemory_api::provider::types::{
+        DiffReport, IngestItem, IngestOutcome, MaintenanceReport, SnapshotRef,
+    };
+
+    for method in ["Reembed", "Compact", "Consolidate", "Doctor"] {
+        let report: MaintenanceReport =
+            tokio::time::timeout(std::time::Duration::from_secs(2), bus.call(method, ()))
+                .await
+                .unwrap_or_else(|_| panic!("{method} timed out"))
+                .expect(method);
+        assert_eq!(
+            report.operation.to_ascii_lowercase(),
+            method.to_ascii_lowercase()
+        );
+    }
+
+    let first: SnapshotRef = bus
+        .call("CaptureSnapshot", ("src_diff",))
+        .await
+        .expect("first CaptureSnapshot");
+    let changed = IngestItem {
+        namespace: Some("project".into()),
+        source: DataSource::Upload,
+        source_id: "mem_src:src_diff:item-2".into(),
+        owner: "owner".into(),
+        source_ref: None,
+        content: "A second deterministic source item changes the snapshot.".into(),
+        mime: Some("text/plain".into()),
+        timestamp: chrono::DateTime::from_timestamp(1_700_000_100, 0),
+        tags: vec!["coverage".into()],
+        taint: MemoryTaint::Internal,
+        path_scope: None,
+    };
+    let _: IngestOutcome = bus
+        .call("IngestDocument", (changed,))
+        .await
+        .expect("changed IngestDocument");
+    let second: SnapshotRef = bus
+        .call("CaptureSnapshot", ("src_diff",))
+        .await
+        .expect("second CaptureSnapshot");
+    let snapshots: Vec<SnapshotRef> = bus
+        .call("Snapshots", ("src_diff", 8_usize))
+        .await
+        .expect("Snapshots");
+    assert_eq!(snapshots.len(), 2);
+    let diff: DiffReport = bus
+        .call("Diff", ("src_diff", Some(first.id), second.id))
+        .await
+        .expect("Diff");
+    assert!(diff.added + diff.modified + diff.removed > 0);
+    let missing_capture: Result<SnapshotRef, _> =
+        bus.call("CaptureSnapshot", ("missing-source",)).await;
+    assert!(missing_capture.is_err());
+}
+
+async fn portability_and_lifecycle_round_trip(bus: &tinybus::Proxy) {
+    use tinymemory_api::provider::types::ExportPage;
+
+    let _: Vec<tinymemory_api::types::NamespaceSummary> =
+        bus.call("Namespaces", ()).await.expect("Namespaces");
+    let page: ExportPage = bus
+        .call("ExportPage", (Option::<String>::None, 16_usize))
+        .await
+        .expect("ExportPage");
+    let _: tinymemory_api::provider::types::ImportOutcome = bus
+        .call("ImportRecords", (page.records,))
+        .await
+        .expect("ImportRecords");
+
+    let invalid_store: Result<String, _> = bus.call("OpenStore", ("../escape",)).await;
+    assert!(invalid_store.is_err());
+    let _: bool = bus
+        .call("DeleteFacet", ("missing-facet",))
+        .await
+        .expect("DeleteFacet");
+    let _: Option<tinymemory_api::provider::profile::ProfileFacet> = bus
+        .call("GetFacet", ("missing-facet",))
+        .await
+        .expect("GetFacet missing");
+    let _: tinymemory_api::health::MemoryHealth = bus.call("Health", ()).await.expect("Health");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        bus.call::<()>("Shutdown", ()),
+    )
+    .await
+    .expect("Shutdown timed out")
+    .expect("Shutdown");
 }

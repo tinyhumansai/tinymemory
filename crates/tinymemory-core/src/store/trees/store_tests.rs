@@ -5,14 +5,16 @@
 use tinymemory_api::host::test_support::TestHostConfig;
 
 use super::*;
+use crate::store::chunks::with_connection;
+use crate::store::trees::types::TreeStatus;
+use chrono::TimeZone;
 use tempfile::TempDir;
 
 fn test_config() -> (TempDir, TestHostConfig) {
-
     crate::test_seams::init();
     let tmp = TempDir::new().unwrap();
     let mut cfg = TestHostConfig::default();
-    cfg.workspace_dir() = tmp.path().to_path_buf();
+    cfg.workspace_dir = tmp.path().to_path_buf();
     (tmp, cfg)
 }
 
@@ -439,7 +441,7 @@ fn get_trees_batch_empty_input_and_missing_ids() {
     let map = get_trees_batch(&cfg, &ids).unwrap();
     assert_eq!(map.len(), 1);
     assert_eq!(map.get("tree-a").unwrap(), &a);
-    assert!(map.get("ghost:no-such").is_none());
+    assert!(!map.contains_key("ghost:no-such"));
 }
 
 // ── get_summaries_batch ────────────────────────────────────────────────
@@ -499,7 +501,7 @@ fn get_summaries_batch_empty_input_and_missing_ids() {
     let map = get_summaries_batch(&cfg, &ids).unwrap();
     assert_eq!(map.len(), 1);
     assert_eq!(map.get("sum-a").unwrap(), &a);
-    assert!(map.get("ghost:no-such").is_none());
+    assert!(!map.contains_key("ghost:no-such"));
 }
 
 // ---------- get_summary_embeddings_for_signature_batch ----------
@@ -549,7 +551,7 @@ fn summary_batch_embedding_lookup_returns_only_signature_scoped_rows() {
     assert_eq!(map_a.len(), 2, "only sum-1 and sum-2 are under sig_a");
     assert_eq!(map_a.get("sum-1").cloned(), Some(vec![0.1, 0.2]));
     assert_eq!(map_a.get("sum-2").cloned(), Some(vec![0.3, 0.4]));
-    assert!(map_a.get("sum-3").is_none(), "sum-3 has only sig_b");
+    assert!(!map_a.contains_key("sum-3"), "sum-3 has only sig_b");
 
     let map_b = get_summary_embeddings_for_signature_batch(&cfg, &ids, sig_b).unwrap();
     assert_eq!(map_b.len(), 1);

@@ -47,3 +47,7 @@ impl RawKind {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "raw_kind_tests.rs"]
+mod tests;

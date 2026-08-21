@@ -58,37 +58,8 @@ pub fn publish(event: MemoryEvent) {
     }
 }
 
-/// A [`MemoryEventSink`] that records what it was given, for tests.
-///
-/// Several tests used to assert on the host's web-channel broadcast, because
-/// before the extraction the publish went straight onto that channel. The
-/// decision to publish is core behaviour; the wire format is the host's. So the
-/// tests kept the half they are actually about — *did the transition publish,
-/// and did it publish exactly once* — and assert it here instead.
 #[cfg(test)]
-#[derive(Debug, Default)]
-pub(crate) struct RecordingSink {
-    events: parking_lot::Mutex<Vec<MemoryEvent>>,
-}
-
+#[path = "events_test_support.rs"]
+mod test_support;
 #[cfg(test)]
-impl RecordingSink {
-    /// Install a fresh recorder and return it. Replaces any existing sink.
-    pub(crate) fn install() -> Arc<Self> {
-        let sink = Arc::new(Self::default());
-        set_event_sink(Arc::clone(&sink) as Arc<dyn MemoryEventSink>);
-        sink
-    }
-
-    /// Take everything recorded so far, leaving the recorder empty.
-    pub(crate) fn drain(&self) -> Vec<MemoryEvent> {
-        std::mem::take(&mut *self.events.lock())
-    }
-}
-
-#[cfg(test)]
-impl MemoryEventSink for RecordingSink {
-    fn publish(&self, event: MemoryEvent) {
-        self.events.lock().push(event);
-    }
-}
+pub(crate) use test_support::RecordingSink;

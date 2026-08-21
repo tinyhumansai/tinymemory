@@ -35,3 +35,13 @@ tower-http = { version = "0.6", features = ["fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
+# Parse URL authority fields before fetch so credentials can be rejected
+# without ever reflecting them through an upstream error message.
+url = "2"
+
+[dev-dependencies]
+# HTTP-level tests exercise the Axum router without binding a port.
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+# Test providers implement the same async driver contracts as real adapters.
+async-trait = "0.1"

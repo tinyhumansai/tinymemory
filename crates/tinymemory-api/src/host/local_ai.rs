@@ -29,7 +29,7 @@ pub struct LocalAiUsage {
     pub subconscious: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct LocalAiConfig {
     /// Master runtime switch. Defaults to `false` — local AI is OFF by default.
@@ -115,6 +115,41 @@ pub struct LocalAiConfig {
     /// All default to `false` (cloud path).
     #[serde(default)]
     pub usage: LocalAiUsage,
+}
+
+impl std::fmt::Debug for LocalAiConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalAiConfig")
+            .field("runtime_enabled", &self.runtime_enabled)
+            .field("provider", &self.provider)
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("model_id", &self.model_id)
+            .field("chat_model_id", &self.chat_model_id)
+            .field("vision_model_id", &self.vision_model_id)
+            .field("embedding_model_id", &self.embedding_model_id)
+            .field("stt_model_id", &self.stt_model_id)
+            .field("stt_download_url", &self.stt_download_url)
+            .field("stt_provider", &self.stt_provider)
+            .field("tts_voice_id", &self.tts_voice_id)
+            .field("tts_provider", &self.tts_provider)
+            .field("tts_download_url", &self.tts_download_url)
+            .field("tts_config_download_url", &self.tts_config_download_url)
+            .field("quantization", &self.quantization)
+            .field("preload_vision_model", &self.preload_vision_model)
+            .field("preload_embedding_model", &self.preload_embedding_model)
+            .field("preload_stt_model", &self.preload_stt_model)
+            .field("preload_tts_voice", &self.preload_tts_voice)
+            .field("download_url", &self.download_url)
+            .field("autosummary_debounce_ms", &self.autosummary_debounce_ms)
+            .field("selected_tier", &self.selected_tier)
+            .field("opt_in_confirmed", &self.opt_in_confirmed)
+            .field("ollama_binary_path", &self.ollama_binary_path)
+            .field("voice_llm_cleanup_enabled", &self.voice_llm_cleanup_enabled)
+            .field("num_ctx", &self.num_ctx)
+            .field("usage", &self.usage)
+            .finish()
+    }
 }
 
 fn default_runtime_enabled() -> bool {
@@ -283,3 +318,7 @@ impl Default for LocalAiConfig {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "local_ai_tests.rs"]
+mod tests;

@@ -29,6 +29,8 @@ pub mod types;
 #[cfg(test)]
 mod benchmarks;
 #[cfg(test)]
+mod fast_tests;
+#[cfg(test)]
 mod integration_tests;
 #[cfg(test)]
 mod source_scope_tests;

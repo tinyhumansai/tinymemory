@@ -26,6 +26,15 @@ use super::*;
 struct VecMemory {
     entries: Mutex<BTreeMap<(String, String), MemoryEntry>>,
     healthy: bool,
+    failure: Option<Failure>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Failure {
+    Store,
+    Recall,
+    List,
+    Summaries,
 }
 
 impl VecMemory {
@@ -33,6 +42,7 @@ impl VecMemory {
         Arc::new(Self {
             entries: Mutex::new(BTreeMap::new()),
             healthy: true,
+            failure: None,
         })
     }
 
@@ -40,6 +50,15 @@ impl VecMemory {
         Arc::new(Self {
             entries: Mutex::new(BTreeMap::new()),
             healthy: false,
+            failure: None,
+        })
+    }
+
+    fn failing(failure: Failure) -> Arc<Self> {
+        Arc::new(Self {
+            entries: Mutex::new(BTreeMap::new()),
+            healthy: true,
+            failure: Some(failure),
         })
     }
 }
@@ -79,6 +98,9 @@ impl Memory for VecMemory {
         session_id: Option<&str>,
         taint: crate::types::MemoryTaint,
     ) -> anyhow::Result<()> {
+        if self.failure == Some(Failure::Store) {
+            anyhow::bail!("store failed");
+        }
         let entry = MemoryEntry {
             id: format!("{namespace}/{key}"),
             key: key.to_string(),
@@ -103,6 +125,9 @@ impl Memory for VecMemory {
         limit: usize,
         opts: RecallOpts<'_>,
     ) -> anyhow::Result<Vec<MemoryEntry>> {
+        if self.failure == Some(Failure::Recall) {
+            anyhow::bail!("recall failed");
+        }
         let entries = self.entries.lock().expect("lock");
         Ok(entries
             .values()
@@ -134,6 +159,9 @@ impl Memory for VecMemory {
         category: Option<&MemoryCategory>,
         session_id: Option<&str>,
     ) -> anyhow::Result<Vec<MemoryEntry>> {
+        if self.failure == Some(Failure::List) {
+            anyhow::bail!("list failed");
+        }
         let wanted = namespace.unwrap_or(GLOBAL_NAMESPACE);
         let entries = self.entries.lock().expect("lock");
         Ok(entries
@@ -155,6 +183,9 @@ impl Memory for VecMemory {
     }
 
     async fn namespace_summaries(&self) -> anyhow::Result<Vec<NamespaceSummary>> {
+        if self.failure == Some(Failure::Summaries) {
+            anyhow::bail!("summaries failed");
+        }
         let entries = self.entries.lock().expect("lock");
         let mut counts: BTreeMap<String, usize> = BTreeMap::new();
         for entry in entries.values() {
@@ -281,6 +312,74 @@ async fn an_unscoped_recall_delegates() {
 }
 
 #[tokio::test]
+async fn backend_failures_cross_each_mandatory_boundary_as_other() {
+    let list_error = list_everything(VecMemory::failing(Failure::Summaries).as_ref(), None, None)
+        .await
+        .expect_err("summary failure");
+    assert!(matches!(list_error, MemoryError::Other(_)));
+
+    let list_memory = VecMemory::failing(Failure::List);
+    list_memory.entries.lock().expect("lock").insert(
+        ("ns".into(), "key".into()),
+        MemoryEntry {
+            id: "ns/key".into(),
+            key: "key".into(),
+            content: "body".into(),
+            namespace: Some("ns".into()),
+            category: MemoryCategory::Core,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            session_id: None,
+            score: None,
+            taint: MemoryTaint::Internal,
+        },
+    );
+    let list_error = list_everything(list_memory.as_ref(), None, None)
+        .await
+        .expect_err("list failure");
+    assert!(matches!(list_error, MemoryError::Other(_)));
+
+    let recall_error = recall(
+        VecMemory::failing(Failure::Recall).as_ref(),
+        "query",
+        10,
+        &OwnedRecallOpts::default(),
+        None,
+    )
+    .await
+    .expect_err("recall failure");
+    assert!(matches!(recall_error, MemoryError::Other(_)));
+
+    let export_error = export_page(VecMemory::failing(Failure::Summaries).as_ref(), None, 10)
+        .await
+        .expect_err("export summary failure");
+    assert!(matches!(export_error, MemoryError::Other(_)));
+
+    let import_error = import_records(
+        VecMemory::failing(Failure::Store).as_ref(),
+        vec![ExportRecord {
+            kind: ENTRY_KIND.into(),
+            id: "record".into(),
+            namespace: Some("ns".into()),
+            taint: MemoryTaint::Internal,
+            payload: serde_json::json!({
+                "key": "key",
+                "content": "body",
+                "category": "core"
+            }),
+        }],
+    )
+    .await
+    .expect_err("import write failure");
+    assert!(matches!(import_error, MemoryError::Other(_)));
+}
+
+#[test]
+fn engine_error_preserves_an_existing_contract_error() {
+    let error = engine_error(anyhow::Error::new(MemoryError::Unauthorized("key".into())));
+    assert!(matches!(error, MemoryError::Unauthorized(reason) if reason == "key"));
+}
+
+#[tokio::test]
 async fn export_pages_across_namespaces_and_terminates_on_a_none_cursor() {
     let driver = provider(seeded().await);
 
@@ -342,6 +441,12 @@ async fn a_cursor_this_driver_did_not_issue_is_refused() {
         .export_page(Some("99:0"), 10)
         .await
         .expect_err("out-of-range namespace index");
+    assert!(matches!(error, MemoryError::Invalid(_)));
+
+    let error = driver
+        .export_page(Some("0:99"), 10)
+        .await
+        .expect_err("out-of-range offset");
     assert!(matches!(error, MemoryError::Invalid(_)));
 }
 

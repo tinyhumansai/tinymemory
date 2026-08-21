@@ -58,3 +58,7 @@ pub fn build_summary_extractor(config: &Config) -> Arc<dyn EntityExtractor> {
         Box::new(extractor),
     ]))
 }
+
+#[cfg(test)]
+#[path = "extract_tests.rs"]
+mod tests;

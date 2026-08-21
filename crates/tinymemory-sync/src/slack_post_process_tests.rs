@@ -260,3 +260,50 @@ fn unknown_slug_is_noop() {
     post_process("SLACK_SEND_MESSAGE", None, &mut data);
     assert_eq!(data, original, "unknown slug must not mutate data");
 }
+
+#[test]
+fn malformed_history_payload_becomes_an_empty_stable_shape() {
+    for mut data in [json!(null), json!([]), json!({"messages": "wrong"})] {
+        post_process("SLACK_FETCH_CONVERSATION_HISTORY", None, &mut data);
+        assert_eq!(data, json!({"messages": []}));
+    }
+}
+
+#[test]
+fn malformed_channel_rows_are_dropped_and_defaults_are_stable() {
+    let mut data = json!({
+        "channels": [
+            null,
+            "not an object",
+            {"id": 7, "name": "numeric id"},
+            {"id": " C1 ", "name": 99, "is_private": "yes"}
+        ]
+    });
+    post_process("SLACK_LIST_CONVERSATIONS", None, &mut data);
+    assert_eq!(
+        data,
+        json!({"channels": [{"id":"C1", "name":"C1", "is_private":false}]})
+    );
+}
+
+#[test]
+fn malformed_search_rows_and_page_counts_fall_back_safely() {
+    let mut data = json!({
+        "messages": {
+            "matches": [
+                null,
+                {"ts":"1.0", "text":"no channel"},
+                {"channel":{"id":"C1"}, "text":"no timestamp"},
+                {"ts":"2.0", "channel":{"id":"C1"}, "text":" valid "}
+            ],
+            "paging": {"pages":"many"}
+        }
+    });
+    post_process("SLACK_SEARCH_MESSAGES", None, &mut data);
+    assert_eq!(data["pages"], 1);
+    let messages = data["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["text"], "no channel");
+    assert!(messages[0].get("channel_id").is_none());
+    assert_eq!(messages[1]["text"], "valid");
+}

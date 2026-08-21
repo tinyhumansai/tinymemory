@@ -27,17 +27,13 @@ struct FakeHostEmbedder {
 
 #[tinybus::interface(name = "ai.tinyhumans.tinymemory.EmbeddingHost")]
 impl FakeHostEmbedder {
-    #[allow(
-        clippy::unused_async,
-        clippy::unused_async_trait_impl,
-        reason = "the interface macro requires async"
-    )]
     async fn embed(
         &self,
         _model: String,
         _dimensions: usize,
         texts: Vec<String>,
     ) -> BusResult<Vec<Vec<f32>>> {
+        std::future::ready(()).await;
         let count = self.force_count.unwrap_or(texts.len());
         Ok((0..count).map(|_| vec![0.5_f32; self.width]).collect())
     }
@@ -285,6 +281,52 @@ async fn dimension_support_is_answered_from_configuration() {
 
     assert!(host.model_supports_dimensions("test-model"));
     assert!(!host.model_supports_dimensions("some-other-model"));
+}
+
+#[tokio::test]
+async fn configured_getters_and_provider_factories_preserve_their_identity() {
+    let connection = bus_with_host(FakeHostEmbedder {
+        width: 6,
+        force_count: None,
+    })
+    .await;
+    let config = ModuleConfig {
+        ollama_base_url: "http://embedder.internal:11434".to_string(),
+        cloud_embedding_model: "cloud-default".to_string(),
+        cloud_embedding_dimensions: 6,
+        ..ModuleConfig::default()
+    };
+    let host = BusEmbeddingHost::new(connection, &config);
+
+    assert_eq!(host.ollama_base_url(), "http://embedder.internal:11434");
+    assert_eq!(host.default_cloud_embedding_model(), "cloud-default");
+    assert_eq!(host.default_cloud_embedding_dimensions(), 6);
+
+    let default_provider = host.default_embedding_provider();
+    assert_eq!(default_provider.name(), "module-bus");
+    assert_eq!(default_provider.model_id(), "cloud-default");
+    assert_eq!(default_provider.dimensions(), 6);
+
+    let cloud = host
+        .cloud_embedding_provider("cloud-explicit", 6)
+        .expect("cloud provider builds");
+    assert_eq!(cloud.name(), "cloud");
+    assert_eq!(cloud.model_id(), "cloud-explicit");
+    assert_eq!(cloud.dimensions(), 6);
+
+    let ollama = host
+        .ollama_embedding_provider("http://ignored.example", "nomic-embed-text", 6)
+        .expect("ollama provider builds");
+    assert_eq!(ollama.name(), "ollama");
+    assert_eq!(ollama.model_id(), "nomic-embed-text");
+    assert_eq!(ollama.dimensions(), 6);
+
+    let rendered = format!("{:?}", host.provider("ollama", "nomic-embed-text", 6));
+    assert!(rendered.contains("BusEmbeddingProvider"), "{rendered}");
+    assert!(rendered.contains("ollama"), "{rendered}");
+    assert!(rendered.contains("nomic-embed-text"), "{rendered}");
+    assert!(rendered.contains("dimensions: 6"), "{rendered}");
+    assert!(!rendered.contains("Connection"), "{rendered}");
 }
 
 #[tokio::test]

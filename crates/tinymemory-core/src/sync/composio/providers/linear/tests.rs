@@ -5,8 +5,23 @@ use super::normalization::{
     extract_viewer, extract_viewer_id,
 };
 use super::LinearProvider;
-use crate::sync::composio::providers::ComposioProvider;
+use crate::sync::composio::providers::{
+    ComposioProvider, ComposioUsageHandle, ProviderContext, TaskFetchFilter,
+};
 use serde_json::json;
+use std::sync::Arc;
+
+fn context() -> ProviderContext {
+    ProviderContext {
+        config: Arc::new(tinymemory_api::host::test_support::TestHostConfig::default())
+            as Arc<crate::Config>,
+        toolkit: "linear".into(),
+        connection_id: Some("connection-1".into()),
+        usage: ComposioUsageHandle::default(),
+        max_items: None,
+        sync_depth_days: None,
+    }
+}
 
 // ── extract_issues ───────────────────────────────────────────────────
 
@@ -169,4 +184,43 @@ fn default_impl_matches_new() {
         a.curated_tools().map(<[_]>::len),
         b.curated_tools().map(<[_]>::len),
     );
+}
+
+#[tokio::test]
+async fn provider_calls_fail_contextually_without_a_composio_host() {
+    let provider = LinearProvider::new();
+    let profile = provider.fetch_user_profile(&context()).await.unwrap_err();
+    assert!(profile.contains("LINEAR_LIST_LINEAR_USERS"));
+    let tasks = provider
+        .fetch_tasks(
+            &context(),
+            &TaskFetchFilter {
+                assignee_is_me: false,
+                team_id: Some(" team-1 ".into()),
+                extra: json!({"includeArchived": false}),
+                max: 3,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(tasks.contains("LINEAR_LIST_LINEAR_ISSUES"));
+}
+
+#[test]
+fn issue_normalization_covers_fallbacks_labels_and_missing_id() {
+    use super::provider::{extract_linear_labels, normalize_linear_issue};
+
+    assert!(normalize_linear_issue(&json!({"title": "missing id"})).is_none());
+    let task = normalize_linear_issue(&json!({
+        "identifier": "ENG-7",
+        "description": "body",
+        "state": {"name": "Started"},
+        "labels": {"nodes": [{"name": "bug"}, {}, {"name": "urgent"}]}
+    }))
+    .unwrap();
+    assert_eq!(task.external_id, "ENG-7");
+    assert_eq!(task.title, "ENG-7");
+    assert_eq!(task.labels, vec!["bug", "urgent"]);
+    assert!(extract_linear_labels(&json!({})).is_empty());
 }

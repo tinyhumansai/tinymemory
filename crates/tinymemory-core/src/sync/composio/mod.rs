@@ -212,3 +212,7 @@ fn connection_to_sync_target(connection: ComposioConnection) -> Option<SyncTarge
         connection_id: connection.id,
     })
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;

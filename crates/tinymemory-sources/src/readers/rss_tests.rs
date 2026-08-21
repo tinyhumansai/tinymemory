@@ -1,5 +1,131 @@
 use super::*;
 
+use crate::readers::SourceReader;
+
+fn cached_reader(url: &str) -> RssReader {
+    RssReader {
+        cache: Mutex::new(Some(types::FeedCache {
+            url: url.to_string(),
+            fetched_at: Instant::now(),
+            entries: vec![
+                types::FeedEntry {
+                    id: "plain".into(),
+                    title: "Plain entry".into(),
+                    body: "plain body".into(),
+                    link: Some("https://example.com/plain".into()),
+                    published: Some("2026-01-01T00:00:00Z".into()),
+                    updated_at_ms: Some(1_767_225_600_000),
+                },
+                types::FeedEntry {
+                    id: "html".into(),
+                    title: "HTML entry".into(),
+                    body: "<p>html body</p>".into(),
+                    link: None,
+                    published: None,
+                    updated_at_ms: None,
+                },
+            ],
+        })),
+    }
+}
+
+fn rss_source(url: Option<&str>, max_items: Option<u32>) -> MemorySourceEntry {
+    MemorySourceEntry {
+        id: "feed".into(),
+        label: "Feed".into(),
+        kind: SourceKind::RssFeed,
+        enabled: true,
+        toolkit: None,
+        connection_id: None,
+        path: None,
+        glob: None,
+        url: url.map(str::to_string),
+        branch: None,
+        paths: Vec::new(),
+        max_commits: None,
+        max_issues: None,
+        max_prs: None,
+        query: None,
+        since_days: None,
+        max_items,
+        selector: None,
+        max_tokens_per_sync: None,
+        max_cost_per_sync_usd: None,
+        sync_depth_days: None,
+    }
+}
+
+#[tokio::test]
+async fn cached_feed_drives_list_and_read_without_network() {
+    let url = "https://example.com/feed.xml";
+    let reader = cached_reader(url);
+    assert_eq!(reader.kind(), SourceKind::RssFeed);
+
+    let listed = reader
+        .list_items(&rss_source(Some(url), Some(1)), std::path::Path::new("."))
+        .await
+        .expect("cached list");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, "plain");
+    assert_eq!(listed[0].updated_at_ms, Some(1_767_225_600_000));
+
+    let plain = reader
+        .read_item(
+            &rss_source(Some(url), None),
+            "plain",
+            std::path::Path::new("."),
+        )
+        .await
+        .expect("cached plaintext item");
+    assert_eq!(plain.content_type, ContentType::Plaintext);
+    assert_eq!(plain.metadata["link"], "https://example.com/plain");
+
+    let html = reader
+        .read_item(
+            &rss_source(Some(url), None),
+            "html",
+            std::path::Path::new("."),
+        )
+        .await
+        .expect("cached HTML item");
+    assert_eq!(html.content_type, ContentType::Html);
+}
+
+#[tokio::test]
+async fn rss_reader_reports_missing_configuration_and_items() {
+    let reader = RssReader::new();
+    let missing_url = rss_source(None, None);
+    assert!(reader
+        .list_items(&missing_url, std::path::Path::new("."))
+        .await
+        .is_err());
+    assert!(reader
+        .read_item(&missing_url, "anything", std::path::Path::new("."))
+        .await
+        .is_err());
+
+    let url = "https://example.com/feed.xml";
+    assert!(cached_reader(url)
+        .read_item(
+            &rss_source(Some(url), None),
+            "missing",
+            std::path::Path::new("."),
+        )
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn blocked_and_malformed_feed_urls_fail_closed_without_network() {
+    for url in ["not a URL", "file:///etc/passwd", "http://127.0.0.1/feed"] {
+        let error = RssReader::new()
+            .list_items(&rss_source(Some(url), None), std::path::Path::new("."))
+            .await
+            .expect_err("unsafe URL must be refused");
+        assert!(!error.to_string().is_empty());
+    }
+}
+
 #[test]
 fn parse_rss_extracts_items() {
     let xml = r#"<?xml version="1.0"?>

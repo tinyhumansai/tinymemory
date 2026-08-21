@@ -3,9 +3,28 @@
 use super::normalization::{
     extract_task_name, extract_task_updated, extract_tasks, extract_user_id, extract_workspace_ids,
 };
+use super::provider::{
+    normalize_clickup_task, ACTION_GET_AUTHORIZED_TEAMS_WORKSPACES, ACTION_GET_AUTHORIZED_USER,
+    ACTION_GET_FILTERED_TEAM_TASKS,
+};
 use super::ClickUpProvider;
-use crate::sync::composio::providers::ComposioProvider;
+use crate::sync::composio::providers::{
+    ComposioProvider, ComposioUsageHandle, ProviderContext, TaskFetchFilter, TaskKind,
+};
 use serde_json::json;
+use std::sync::Arc;
+
+fn context() -> ProviderContext {
+    ProviderContext {
+        config: Arc::new(tinymemory_api::host::test_support::TestHostConfig::default())
+            as Arc<crate::Config>,
+        toolkit: "clickup".into(),
+        connection_id: Some("connection-1".into()),
+        usage: ComposioUsageHandle::default(),
+        max_items: None,
+        sync_depth_days: None,
+    }
+}
 
 #[test]
 fn extract_tasks_walks_common_shapes() {
@@ -152,4 +171,63 @@ fn default_impl_matches_new() {
         a.curated_tools().map(<[_]>::len),
         b.curated_tools().map(<[_]>::len),
     );
+}
+
+#[tokio::test]
+async fn provider_calls_fail_with_the_action_that_needs_a_host() {
+    let provider = ClickUpProvider::new();
+    let ctx = context();
+    let profile = provider
+        .fetch_user_profile(&ctx)
+        .await
+        .expect_err("profile requires a configured host");
+    assert!(profile.contains(ACTION_GET_AUTHORIZED_USER), "{profile}");
+
+    let workspaces = provider
+        .fetch_tasks(&ctx, &TaskFetchFilter::default())
+        .await
+        .expect_err("workspace discovery requires a configured host");
+    assert!(
+        workspaces.contains(ACTION_GET_AUTHORIZED_TEAMS_WORKSPACES),
+        "{workspaces}"
+    );
+
+    let tasks = provider
+        .fetch_tasks(
+            &ctx,
+            &TaskFetchFilter {
+                team_id: Some("team-1".into()),
+                assignee_is_me: false,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("task fetch requires a configured host");
+    assert!(tasks.contains(ACTION_GET_FILTERED_TEAM_TASKS), "{tasks}");
+}
+
+#[test]
+fn task_normalization_maps_wrapped_fields_and_rejects_missing_ids() {
+    let task = normalize_clickup_task(&json!({
+        "data": {
+            "task_id": "task-7",
+            "description": "Ship deterministic tests",
+            "url": "https://app.clickup.com/t/task-7",
+            "status": {"status": "in progress"},
+            "assignees": [{"username": "alice"}],
+            "due_date": "1700000000000",
+            "priority": {"priority": "high"},
+            "dateUpdated": "1690000000000"
+        }
+    }))
+    .expect("wrapped task normalizes");
+    assert_eq!(task.external_id, "task-7");
+    assert_eq!(task.title, "ClickUp task task-7");
+    assert_eq!(task.kind, TaskKind::Generic);
+    assert_eq!(task.body.as_deref(), Some("Ship deterministic tests"));
+    assert_eq!(task.assignee.as_deref(), Some("alice"));
+    assert_eq!(task.status.as_deref(), Some("in progress"));
+    assert_eq!(task.priority.as_deref(), Some("high"));
+    assert_eq!(task.labels, Vec::<String>::new());
+    assert!(normalize_clickup_task(&json!({"name": "unroutable"})).is_none());
 }

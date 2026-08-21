@@ -244,7 +244,7 @@ impl ComposioProvider for ClickUpProvider {
 
 /// Map a raw ClickUp task payload into a [`NormalizedTask`]. Returns
 /// `None` only when the task has no extractable id (unroutable).
-fn normalize_clickup_task(task: &serde_json::Value) -> Option<NormalizedTask> {
+pub(super) fn normalize_clickup_task(task: &serde_json::Value) -> Option<NormalizedTask> {
     let external_id = pick_str(task, TASK_ID_PATHS)?;
     let title = normalization::extract_task_name(task)
         .unwrap_or_else(|| format!("ClickUp task {external_id}"));

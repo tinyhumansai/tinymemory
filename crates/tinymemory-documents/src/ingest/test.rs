@@ -33,6 +33,7 @@ struct Recorded {
 struct FakeProvider {
     has_ingest: bool,
     has_documents: bool,
+    fail_writes: bool,
     recorded: Mutex<Recorded>,
 }
 
@@ -41,6 +42,7 @@ impl FakeProvider {
         Self {
             has_ingest: true,
             has_documents: true,
+            fail_writes: false,
             recorded: Mutex::new(Recorded::default()),
         }
     }
@@ -49,6 +51,7 @@ impl FakeProvider {
         Self {
             has_ingest: false,
             has_documents: true,
+            fail_writes: false,
             recorded: Mutex::new(Recorded::default()),
         }
     }
@@ -57,6 +60,16 @@ impl FakeProvider {
         Self {
             has_ingest: false,
             has_documents: false,
+            fail_writes: false,
+            recorded: Mutex::new(Recorded::default()),
+        }
+    }
+
+    fn failing(has_ingest: bool, has_documents: bool) -> Self {
+        Self {
+            has_ingest,
+            has_documents,
+            fail_writes: true,
             recorded: Mutex::new(Recorded::default()),
         }
     }
@@ -80,6 +93,9 @@ impl MemoryCore for FakeProvider {
         _session_id: Option<&str>,
         _taint: MemoryTaint,
     ) -> Result<()> {
+        if self.fail_writes {
+            return Err(MemoryError::Backend("core write rejected".to_string()));
+        }
         self.recorded()
             .entries
             .push((namespace.to_string(), key.to_string(), content.to_string()));
@@ -141,6 +157,9 @@ impl MemoryPortability for FakeProvider {
 #[async_trait]
 impl MemoryIngest for FakeProvider {
     async fn ingest_document(&self, item: IngestItem) -> Result<IngestOutcome> {
+        if self.fail_writes {
+            return Err(MemoryError::Backend("ingest write rejected".to_string()));
+        }
         self.recorded().ingested.push(item);
         Ok(IngestOutcome {
             written: 4,
@@ -157,6 +176,9 @@ impl MemoryIngest for FakeProvider {
 #[async_trait]
 impl MemoryDocuments for FakeProvider {
     async fn put_document(&self, input: NamespaceDocumentInput) -> Result<String> {
+        if self.fail_writes {
+            return Err(MemoryError::Backend("document write rejected".to_string()));
+        }
         self.recorded().documents.push(input);
         Ok("doc-7".to_string())
     }
@@ -486,6 +508,30 @@ async fn a_receipt_reports_both_sizes() {
     assert_eq!(receipt.source_bytes, "<h1>Page</h1>".len());
     assert_eq!(receipt.markdown_bytes, "# Page".len());
     assert_eq!(receipt.format, DocumentFormat::Html);
+}
+
+#[tokio::test]
+async fn driver_failures_propagate_from_every_intake_route() {
+    for (provider, expected) in [
+        (FakeProvider::failing(true, true), "ingest write rejected"),
+        (
+            FakeProvider::failing(false, true),
+            "document write rejected",
+        ),
+        (FakeProvider::failing(false, false), "core write rejected"),
+    ] {
+        let chain = ConverterChain::default();
+        let error = DocumentIntake::new(&provider, &chain)
+            .accept(&markdown_upload(), &IntakeRequest::new("document:failure"))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, MemoryError::Backend(_)), "got {error:?}");
+        assert!(error.to_string().contains(expected), "got {error}");
+        let recorded = provider.recorded();
+        assert!(recorded.ingested.is_empty());
+        assert!(recorded.documents.is_empty());
+        assert!(recorded.entries.is_empty());
+    }
 }
 
 #[test]

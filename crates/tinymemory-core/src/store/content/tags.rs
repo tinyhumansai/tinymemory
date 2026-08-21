@@ -132,3 +132,7 @@ fn write_atomically(abs_path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
     }
     result
 }
+
+#[cfg(test)]
+#[path = "tags_tests.rs"]
+mod tests;

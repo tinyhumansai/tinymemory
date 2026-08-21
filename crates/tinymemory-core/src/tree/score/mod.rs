@@ -39,3 +39,7 @@ pub fn scoring_config_from(config: &crate::Config) -> ScoringConfig {
     );
     ScoringConfig::with_llm_extractor(Arc::new(extractor))
 }
+
+#[cfg(test)]
+#[path = "score_tests.rs"]
+mod tests;

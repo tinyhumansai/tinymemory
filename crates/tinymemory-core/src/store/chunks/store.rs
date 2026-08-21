@@ -171,3 +171,7 @@ pub use embeddings::{
 pub(crate) use embeddings::{
     has_uncovered_reembed_work, set_chunk_embedding_for_signature_tx, tree_active_signature,
 };
+
+#[cfg(test)]
+#[path = "store_tests.rs"]
+mod tests;

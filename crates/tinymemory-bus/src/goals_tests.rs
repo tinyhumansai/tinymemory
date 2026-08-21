@@ -20,3 +20,11 @@ fn parse_ignores_non_item_lines() {
     assert_eq!(doc.items[0].id, "g1");
     assert_eq!(doc.items[0].text, "real goal");
 }
+
+#[test]
+fn next_id_returns_the_lowest_free_numeric_id() {
+    let doc = GoalsDoc {
+        items: vec![GoalItem::new("g1", "one"), GoalItem::new("g3", "three")],
+    };
+    assert_eq!(doc.next_id(), "g2");
+}

@@ -41,9 +41,12 @@ pub(super) fn next_cursor(data: &Value) -> Option<String> {
         "/data/data/response_metadata/next_cursor",
     ]
     .iter()
-    .find_map(|path| data.pointer(path).and_then(Value::as_str))
-    .map(str::trim)
-    .filter(|cursor| !cursor.is_empty())
+    .find_map(|path| {
+        data.pointer(path)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|cursor| !cursor.is_empty())
+    })
     .map(str::to_owned)
 }
 
@@ -89,3 +92,7 @@ pub(super) fn parse_ts(ts: &str) -> Option<(i64, u64)> {
         parts.next().unwrap_or("0").parse().ok()?,
     ))
 }
+
+#[cfg(test)]
+#[path = "slack_parse_tests.rs"]
+mod tests;

@@ -167,8 +167,11 @@ impl MemoryRecall for InMemoryProvider {
         query: &str,
         limit: usize,
         opts: &OwnedRecallOpts,
-        _scope: Option<&SourceScope>,
+        scope: Option<&SourceScope>,
     ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        if scope.is_some_and(SourceScope::is_empty) {
+            return Ok(Vec::new());
+        }
         let needle = query.to_lowercase();
         Ok(self
             .rows()?

@@ -492,7 +492,12 @@ async fn cg_recall(State(sets): State<Datasets>, Json(body): Json<Value>) -> Jso
         .take(limit)
         .map(|raw| json!({ "text": raw }))
         .collect();
-    Json(json!({ "results": hits }))
+    // Cognee's `only_context` recall response is the result array itself. The
+    // adapter deliberately decodes that native shape (the focused Cognee
+    // contract double does too); wrapping it in `{ "results": ... }` makes a
+    // healthy adapter appear to return no rows and lets this conformance test
+    // fail for a bug in its own fake backend.
+    Json(Value::Array(hits))
 }
 
 async fn cognee_backend() -> String {

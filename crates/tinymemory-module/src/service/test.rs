@@ -18,6 +18,75 @@ use tinymemory_api::wire;
 
 use super::into_bus_error;
 
+fn test_provider() -> std::sync::Arc<dyn tinymemory_api::provider::MemoryProvider> {
+    std::sync::Arc::new(tinymemory_tinycortex::provider(std::sync::Arc::new(
+        tinycortex::memory::store::InMemoryMemoryStore::new(),
+    )))
+}
+
+async fn test_connection() -> tinybus::Connection {
+    use tinybus::transport::memory::MemoryBus;
+
+    let bus = MemoryBus::new();
+    let broker = tinybus::broker::Broker::new();
+    let _broker_task = broker.spawn(bus.clone());
+    let connection = tinybus::Connection::connect(bus.connect().await.expect("test transport"))
+        .await
+        .expect("test connection");
+    connection
+        .request_name(super::BUS_NAME)
+        .await
+        .expect("claim test service name");
+    connection
+}
+
+fn test_config(workspace: &std::path::Path) -> crate::config::ModuleConfig {
+    crate::config::ModuleConfig {
+        workspace_dir: workspace.to_path_buf(),
+        ..crate::config::ModuleConfig::default()
+    }
+}
+
+/// Holds the embedding-host test mutex while a temporary host is installed.
+///
+/// Restoring in `Drop` keeps the process global correct even when an assertion
+/// panics. The mutex guard is deliberately retained for the whole scope: the
+/// factory reads the host during each `OpenStore`, not just during setup.
+struct EmbeddingHostRestore {
+    _lock: std::sync::MutexGuard<'static, ()>,
+    previous: Option<std::sync::Arc<dyn tinymemory_core::embedding_host::EmbeddingHost>>,
+}
+
+impl EmbeddingHostRestore {
+    fn install(connection: tinybus::Connection, config: &crate::config::ModuleConfig) -> Self {
+        let lock = tinymemory_core::embedding_host::embedding_test_guard();
+        let previous = tinymemory_core::embedding_host::embedding_host();
+        tinymemory_core::embedding_host::set_embedding_host(std::sync::Arc::new(
+            crate::embedding::BusEmbeddingHost::new(connection, config),
+        ));
+        Self {
+            _lock: lock,
+            previous,
+        }
+    }
+}
+
+impl Drop for EmbeddingHostRestore {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(previous) => tinymemory_core::embedding_host::set_embedding_host(previous),
+            None => tinymemory_core::embedding_host::clear_embedding_host(),
+        }
+    }
+}
+
+fn test_opener(
+    connection: tinybus::Connection,
+    config: crate::config::ModuleConfig,
+) -> std::sync::Arc<super::StoreOpener> {
+    std::sync::Arc::new(super::StoreOpener::new(connection, config))
+}
+
 /// The name and message a mapped error carries on the wire.
 fn mapped(error: &MemoryError) -> (String, String) {
     match into_bus_error(error) {
@@ -221,6 +290,164 @@ fn the_per_entry_overhead_is_counted_so_many_tiny_entries_still_trip_it() {
     assert!(
         super::ensure_response_fits(&entries, "List").is_err(),
         "entries with no content must still be counted"
+    );
+}
+
+#[test]
+fn store_object_paths_accept_only_one_safe_identifier_component() {
+    let valid = [
+        ("profile-1", "profile_2d1".to_string()),
+        ("profile_one", "profile_5fone".to_string()),
+        ("A9", "A9".to_string()),
+        (&"x".repeat(128), "x".repeat(128)),
+    ];
+    for (subdir, component) in valid {
+        assert_eq!(
+            super::object_path_for_subdir(subdir),
+            Some(format!("{}/stores/{component}", super::OBJECT_PATH))
+        );
+    }
+
+    assert_ne!(
+        super::object_path_for_subdir("a-b"),
+        super::object_path_for_subdir("a_2db"),
+        "escaped identifiers must not collide"
+    );
+
+    for invalid in [
+        "",
+        ".",
+        "..",
+        "../escape",
+        "nested/store",
+        "nested\\store",
+        "profile.name",
+        "profile name",
+        "pröfile",
+        &"x".repeat(129),
+    ] {
+        assert!(
+            super::object_path_for_subdir(invalid).is_none(),
+            "unsafe subdirectory was admitted: {invalid:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_leaf_store_cannot_recursively_open_another_store() {
+    let service = super::MemoryService::new(test_provider());
+    let error = service
+        .open_store("child".to_string())
+        .await
+        .expect_err("leaf stores must not recursively open stores");
+    let tinybus::Error::MethodFailed { name, message } = error else {
+        panic!("expected MethodFailed");
+    };
+    assert_eq!(name, tinymemory_api::wire::INVALID);
+    assert!(message.contains("root"));
+}
+
+#[tokio::test]
+async fn repeated_and_concurrent_opens_reuse_the_registered_object_path() {
+    use std::sync::Arc;
+
+    let workspace = tempfile::tempdir().expect("tempdir");
+    let connection = test_connection().await;
+    let config = test_config(workspace.path());
+    let _embedding_host = EmbeddingHostRestore::install(connection.clone(), &config);
+    let opener = test_opener(connection.clone(), config);
+    let expected = format!("{}/stores/profile_2d1", super::OBJECT_PATH);
+    let service = Arc::new(super::MemoryService::root(
+        test_provider(),
+        Arc::clone(&opener),
+    ));
+
+    let mut tasks = Vec::new();
+    for _ in 0..16 {
+        let service = Arc::clone(&service);
+        tasks.push(tokio::spawn(async move {
+            service.open_store("profile-1".to_string()).await
+        }));
+    }
+    for task in tasks {
+        assert_eq!(task.await.expect("join").expect("reused store"), expected);
+    }
+    assert_eq!(opener.instrumentation.allocation_attempts(), 1);
+    assert_eq!(opener.instrumentation.registration_attempts(), 1);
+    assert_eq!(opener.served.lock().await.len(), 1);
+
+    let driver_id: String = connection
+        .proxy(super::BUS_NAME, &expected, super::BUS_NAME)
+        .expect("store proxy")
+        .call("DriverId", ())
+        .await
+        .expect("the newly registered object must answer");
+    assert_eq!(driver_id, "tinycortex");
+}
+
+#[tokio::test]
+async fn a_failed_registration_is_retried_and_only_success_counts_toward_the_cap() {
+    use std::sync::Arc;
+
+    let workspace = tempfile::tempdir().expect("tempdir");
+    let connection = test_connection().await;
+    let config = test_config(workspace.path());
+    let _embedding_host = EmbeddingHostRestore::install(connection.clone(), &config);
+    let opener = test_opener(connection, config);
+    opener.instrumentation.fail_registrations(1);
+    let service = super::MemoryService::root(test_provider(), Arc::clone(&opener));
+    service
+        .open_store("retry".to_string())
+        .await
+        .expect_err("the first registration is injected to fail");
+    assert!(opener.served.lock().await.is_empty());
+
+    let path = service
+        .open_store("retry".to_string())
+        .await
+        .expect("the same subtree must be retried");
+    assert_eq!(path, format!("{}/stores/retry", super::OBJECT_PATH));
+    assert_eq!(opener.instrumentation.allocation_attempts(), 2);
+    assert_eq!(opener.instrumentation.registration_attempts(), 2);
+    assert_eq!(opener.served.lock().await.len(), 1);
+}
+
+#[tokio::test]
+async fn the_open_store_cap_is_reached_through_successful_opens() {
+    use std::sync::Arc;
+
+    let workspace = tempfile::tempdir().expect("tempdir");
+    let connection = test_connection().await;
+    let config = test_config(workspace.path());
+    let _embedding_host = EmbeddingHostRestore::install(connection.clone(), &config);
+    let opener = test_opener(connection, config);
+    let service = super::MemoryService::root(test_provider(), Arc::clone(&opener));
+
+    for index in 0..super::MAX_OPEN_STORES {
+        service
+            .open_store(format!("profile-{index}"))
+            .await
+            .unwrap_or_else(|error| panic!("successful open {index} failed: {error}"));
+    }
+    let error = service
+        .open_store("one-more".to_string())
+        .await
+        .expect_err("the store cap must be enforced");
+    let tinybus::Error::MethodFailed { name, message } = error else {
+        panic!("expected MethodFailed");
+    };
+    assert_eq!(name, tinymemory_api::wire::INVALID);
+    assert!(message.contains(&super::MAX_OPEN_STORES.to_string()));
+    assert_eq!(opener.served.lock().await.len(), super::MAX_OPEN_STORES);
+    assert_eq!(
+        opener.instrumentation.allocation_attempts(),
+        super::MAX_OPEN_STORES,
+        "the refused open must not allocate"
+    );
+    assert_eq!(
+        opener.instrumentation.registration_attempts(),
+        super::MAX_OPEN_STORES,
+        "the refused open must not register"
     );
 }
 

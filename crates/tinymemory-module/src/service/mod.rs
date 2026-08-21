@@ -148,6 +148,13 @@ use tinymemory_api::types::{
 };
 use tinymemory_api::wire;
 
+#[cfg(not(test))]
+#[path = "instrumentation.rs"]
+mod instrumentation;
+#[cfg(test)]
+#[path = "instrumentation_test.rs"]
+mod instrumentation;
+
 /// Well-known name exported by the `TinyMemory` module.
 pub const BUS_NAME: &str = "ai.tinyhumans.tinymemory.Memory";
 
@@ -194,6 +201,7 @@ pub(crate) struct StoreOpener {
     /// through and produce exactly the double-open it is here to prevent. That
     /// is why this is a `tokio::sync::Mutex`.
     served: Mutex<HashMap<String, String>>,
+    instrumentation: instrumentation::OpenStoreInstrumentation,
 }
 
 impl MemoryService {
@@ -220,6 +228,7 @@ impl StoreOpener {
             connection,
             config,
             served: Mutex::new(HashMap::new()),
+            instrumentation: instrumentation::OpenStoreInstrumentation::default(),
         }
     }
 }
@@ -231,6 +240,8 @@ impl StoreOpener {
 /// this from a profile id, and an id that fails validation must produce a
 /// refusal, not a malformed path.
 fn object_path_for_subdir(memory_subdir: &str) -> Option<String> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
     if memory_subdir.is_empty()
         || memory_subdir.len() > 128
         || !memory_subdir
@@ -239,7 +250,21 @@ fn object_path_for_subdir(memory_subdir: &str) -> Option<String> {
     {
         return None;
     }
-    Some(format!("{OBJECT_PATH}/stores/{memory_subdir}"))
+
+    // TinyBus object-path elements accept ASCII alphanumerics and `_`, but a
+    // profile id commonly contains `-`. Escape both punctuation characters so
+    // the mapping remains injective (`a-b` cannot collide with `a_2db`).
+    let mut component = String::with_capacity(memory_subdir.len());
+    for byte in memory_subdir.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            component.push(char::from(byte));
+        } else {
+            component.push('_');
+            component.push(char::from(HEX[usize::from(byte >> 4)]));
+            component.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+    Some(format!("{OBJECT_PATH}/stores/{component}"))
 }
 
 macro_rules! require_family {
@@ -254,13 +279,8 @@ macro_rules! require_family {
 #[tinybus::interface(name = "ai.tinyhumans.tinymemory.Memory")]
 impl MemoryService {
     /// The bound driver's stable identifier.
-    #[allow(
-        clippy::unused_async,
-        clippy::unused_async_trait_impl,
-        reason = "tinybus::interface requires every method to be `async fn`"
-    )]
     async fn driver_id(&self) -> BusResult<String> {
-        Ok(self.provider.driver_id().to_string())
+        std::future::ready(Ok(self.provider.driver_id().to_string())).await
     }
 
     /// The families this driver implements.
@@ -268,13 +288,8 @@ impl MemoryService {
     /// The host caches this at bind time, exactly as it would for an in-process
     /// driver — the trait documents that the set is asked once and must not
     /// change afterwards.
-    #[allow(
-        clippy::unused_async,
-        clippy::unused_async_trait_impl,
-        reason = "tinybus::interface requires every method to be `async fn`"
-    )]
     async fn capabilities(&self) -> BusResult<Capabilities> {
-        Ok(self.provider.capabilities())
+        std::future::ready(Ok(self.provider.capabilities())).await
     }
 
     /// Current liveness, as the driver reports it.
@@ -367,6 +382,7 @@ impl MemoryService {
             });
         }
 
+        opener.instrumentation.record_allocation();
         let client = tinymemory_core::store::factories::create_memory_client_in_subdir(
             &opener.config.memory,
             None,
@@ -387,6 +403,7 @@ impl MemoryService {
         })?;
 
         let provider = crate::provider::provider(&opener.config, Arc::new(client));
+        opener.instrumentation.before_registration()?;
         opener
             .connection
             .serve_at(

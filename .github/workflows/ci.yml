@@ -165,14 +165,58 @@ jobs:
       - name: Feature powerset compiles
         run: cargo hack --feature-powerset --depth 2 --workspace check --all-targets
 
-      # §E8. `AGENTS.md` asks for 80% of meaningful library behaviour and
-      # nothing measured it. Reported rather than enforced to begin with: a
-      # threshold picked before anyone has seen the number is a guess, and a
-      # failing gate on day one gets disabled rather than fixed.
-      - name: Coverage
+      # §E8. Enforce the repository's 80% floor over production sources only.
+      # Test helpers and vendored code can make the aggregate look healthy
+      # without exercising the libraries a release actually ships.
+      - name: Enforce production-source coverage
         run: |
-          cargo llvm-cov --all-features --workspace --summary-only \
+          set -euo pipefail
+          cargo llvm-cov --all-features --workspace \
+            --ignore-filename-regex '(^|/)(tests|vendor)/|(^|/)(test|tests|test_helpers|test_support|test_seams)\.rs$|(_test|_tests|_test_support)\.rs$|/crates/tinymemory-core/src/(engine/parity|tree/retrieval/benchmarks)\.rs$' \
+            --fail-under-lines 80 --summary-only \
             | tee "$GITHUB_STEP_SUMMARY"
+          cargo llvm-cov report \
+            --ignore-filename-regex '(^|/)(tests|vendor)/|(^|/)(test|tests|test_helpers|test_support|test_seams)\.rs$|(_test|_tests|_test_support)\.rs$|/crates/tinymemory-core/src/(engine/parity|tree/retrieval/benchmarks)\.rs$' \
+            --json --output-path target/production-coverage.json
+          test_decl_line="$(grep -n '#\[cfg(test)\]' \
+            crates/tinymemory-api/src/host/local_ai.rs | tail -1 | cut -d: -f1)"
+          active_line="$(grep -n 'pub fn is_active' \
+            crates/tinymemory-api/src/host/local_ai.rs | cut -d: -f1)"
+          jq -e --argjson test_decl_line "$test_decl_line" \
+            --argjson active_line "$active_line" '
+            .data as $data
+            | [$data[].files[]
+                | select(.filename | endswith("/crates/tinymemory-api/src/host/local_ai.rs"))]
+              as $local_ai
+            | ($local_ai | length == 1)
+              and ([$local_ai[].segments[]
+                | select(.[0] >= $test_decl_line and .[3] == true)] | length == 0)
+              and ([$local_ai[].segments[]
+                | select(.[0] == $active_line and .[2] > 0 and .[3] == true)] | length > 0)
+              and ([$data[].files[]
+                | select(.filename | endswith("/local_ai_tests.rs"))] | length == 0)
+          ' target/production-coverage.json
+          inline_test_code="$(
+            grep -R -l -E '^[[:space:]]*#\[cfg\((test|any\(test,)' crates \
+              --include='*.rs' --exclude='test.rs' --exclude='tests.rs' \
+              --exclude='*_test.rs' --exclude='*_tests.rs' \
+              --exclude='*_test_support.rs' --exclude='test_support.rs' \
+              --exclude='test_helpers.rs' --exclude='test_seams.rs' \
+            | xargs -r awk '
+              /^[[:space:]]*#\[cfg\((test|any\(test,)/ { cfgline=FNR; pending=1; next }
+              pending && (/^[[:space:]]*$/ || /^[[:space:]]*#/ || /^[[:space:]]*\/\//) { next }
+              pending {
+                if ($0 !~ /^[[:space:]]*(pub\([^)]*\)[[:space:]]+)?(pub[[:space:]]+)?(mod|use)[[:space:]]/)
+                  print FILENAME ":" cfgline ":" $0
+                pending=0
+              }
+            '
+          )"
+          if [[ -n "$inline_test_code" ]]; then
+            printf '%s\n' "$inline_test_code" >&2
+            echo 'inline test-only executable code must live in a filtered test file' >&2
+            exit 1
+          fi
 
   # §E2's first half: build **and test** each engine configuration on its own.
   #
@@ -186,10 +230,8 @@ jobs:
   # `DriverRegistry` admission is a static policy table rather than a function
   # of which adapters were compiled in.
   #
-  # Two of §E2's nine configurations name features the facade does not have.
-  # `--features contacts` belongs to `tinymemory-core` and is covered by the
-  # powerset job above. `--features sync-composio` names a feature that exists
-  # nowhere in the workspace: the Composio sync is unconditional in
+  # `--features sync-composio` names a feature that exists nowhere in the
+  # workspace: the Composio sync is unconditional in
   # `tinymemory-core`, so there is nothing to select and nothing to isolate.
   # Recorded here rather than quietly dropped, because a missing row in a
   # matrix reads as covered.
@@ -208,6 +250,18 @@ jobs:
             features: --features tinycortex
           - name: tinycortex and memory-git
             features: --features tinycortex,memory-git
+          - name: memory-git implication
+            features: --no-default-features --features memory-git
+          - name: all engines aggregate
+            features: --no-default-features --features engines
+          - name: sources network implication
+            features: --no-default-features --features sources-network
+          - name: documents network implication
+            features: --no-default-features --features documents-network
+          - name: contacts implication
+            features: --no-default-features --features contacts
+          - name: full aggregate
+            features: --no-default-features --features full
           - name: mem0
             features: --features mem0
           - name: supermemory
@@ -250,9 +304,13 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532 # v2
+        with:
+          tool: cargo-llvm-cov
 
       - name: Check formatting
         run: cargo fmt --manifest-path crates/tinymemory-module/Cargo.toml --all -- --check
@@ -272,6 +330,17 @@ jobs:
 
       - name: Unit tests
         run: cargo test --manifest-path crates/tinymemory-module/Cargo.toml --lib
+
+      # The module is excluded from the root workspace, so the root coverage
+      # gate cannot see it. Hold its production code to the same floor here.
+      - name: Enforce module production-source coverage
+        run: |
+          set -euo pipefail
+          cargo llvm-cov --manifest-path crates/tinymemory-module/Cargo.toml \
+            --workspace --all-features \
+            --ignore-filename-regex '(^|/)(tests|vendor)/|(^|/)(test|tests|test_helpers|test_support|test_seams)\.rs$|(_test|_tests|_test_support)\.rs$|/crates/tinymemory-core/src/(engine/parity|tree/retrieval/benchmarks)\.rs$' \
+            --fail-under-lines 80 --summary-only \
+            | tee "$GITHUB_STEP_SUMMARY"
 
       # The loader E2E drives a real dlopen'ed module, and tinybus binds its
       # broker tasks to the runtime that created them. The module is loaded once

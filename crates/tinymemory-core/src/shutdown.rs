@@ -47,6 +47,12 @@ pub fn clear_shutdown_host() {
     *HOST.write() = None;
 }
 
+/// The installed shutdown host, or `None` when nothing has been wired up.
+#[must_use]
+pub fn shutdown_host() -> Option<Arc<dyn ShutdownHost>> {
+    HOST.read().clone()
+}
+
 /// Register a hook to run before the process exits.
 ///
 /// A no-op beyond logging when no host is installed — see the module docs.
@@ -55,7 +61,7 @@ where
     F: Fn() -> Fut + Send + Sync + 'static,
     Fut: Future<Output = ()> + Send + 'static,
 {
-    let host = HOST.read().clone();
+    let host = shutdown_host();
     match host {
         Some(host) => host.register(Box::new(move || Box::pin(hook()))),
         None => log::debug!(

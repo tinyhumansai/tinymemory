@@ -112,3 +112,7 @@ impl ChatModel<()> for BusChatModel {
             .map_err(|error| tinyagents::TinyAgentsError::Model(error.to_string()))
     }
 }
+
+#[cfg(test)]
+#[path = "chat_test.rs"]
+mod test;

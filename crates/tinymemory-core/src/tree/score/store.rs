@@ -76,3 +76,7 @@ fn to_store_entity(
 pub fn count_scores(config: &Config) -> Result<u64> {
     crate::engine::backend::score::store::count_scores(&engine_config(config))
 }
+
+#[cfg(test)]
+#[path = "store_tests.rs"]
+mod tests;

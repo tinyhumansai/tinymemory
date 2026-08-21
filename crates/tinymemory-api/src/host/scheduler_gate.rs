@@ -186,3 +186,7 @@ impl Policy {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "scheduler_gate_tests.rs"]
+mod tests;

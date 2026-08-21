@@ -168,18 +168,18 @@ impl ChatProvider for InferenceChatProvider {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-fn test_override_runtime() -> Option<(Arc<dyn ChatProvider>, String)> {
-    test_override::current().map(|provider| (provider, "test:override".to_string()))
-}
+pub use test_support::{test_override, StaticChatProvider};
 
-#[cfg(not(any(test, feature = "test-support")))]
-fn test_override_runtime() -> Option<(Arc<dyn ChatProvider>, String)> {
-    None
-}
-
+// The task-local provider implementation is external test support. Keep the
+// live runtime builder below at its established source coordinates so LLVM can
+// merge identical copies linked into unit and integration-test executables.
+//
+// Runtime selection remains explicit in `runtime_override`; no test provider
+// implementation or fixture state lives in this production source file.
+//
 /// Build the memory LLM provider and return the resolved model id.
 pub fn build_chat_runtime(config: &Config) -> Result<(Arc<dyn ChatProvider>, String)> {
-    if let Some(runtime) = test_override_runtime() {
+    if let Some(runtime) = runtime_override::current_runtime() {
         return Ok(runtime);
     }
 
@@ -211,90 +211,11 @@ pub fn build_chat_provider(config: &Config) -> Result<Arc<dyn ChatProvider>> {
     Ok(build_chat_runtime(config)?.0)
 }
 
-#[cfg(any(test, feature = "test-support"))]
-pub struct StaticChatProvider {
-    pub response: String,
-    pub calls: std::sync::atomic::AtomicUsize,
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl StaticChatProvider {
-    pub fn new(response: impl Into<String>) -> Self {
-        Self {
-            response: response.into(),
-            calls: std::sync::atomic::AtomicUsize::new(0),
-        }
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-#[async_trait]
-impl ChatProvider for StaticChatProvider {
-    fn name(&self) -> &str {
-        "test:static"
-    }
-
-    async fn chat_for_json(&self, _prompt: &ChatPrompt) -> Result<String> {
-        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(self.response.clone())
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_override {
-    use super::ChatProvider;
-    use std::sync::Arc;
-
-    tokio::task_local! {
-        static OVERRIDE: Arc<dyn ChatProvider>;
-    }
-
-    pub fn current() -> Option<Arc<dyn ChatProvider>> {
-        OVERRIDE.try_with(Arc::clone).ok()
-    }
-
-    pub async fn with_provider<F, T>(provider: Arc<dyn ChatProvider>, fut: F) -> T
-    where
-        F: std::future::Future<Output = T>,
-    {
-        OVERRIDE.scope(provider, fut).await
-    }
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "chat_tests.rs"]
+mod tests;
 
-    #[tokio::test]
-    async fn static_chat_provider_returns_response_and_counts() {
-        let p = StaticChatProvider::new("hello");
-        let prompt = ChatPrompt {
-            system: "sys".into(),
-            user: "u".into(),
-            temperature: 0.0,
-            kind: "test",
-            max_tokens: None,
-        };
-        assert_eq!(p.chat_for_json(&prompt).await.unwrap(), "hello");
-        assert_eq!(p.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn chat_for_text_with_usage_default_impl_reports_no_usage() {
-        // A provider that doesn't override `chat_for_text_with_usage`
-        // (here the `chat_for_json`-only `StaticChatProvider`) must still
-        // return its text, with `None` usage — so summarise() falls back
-        // to the estimate rather than reporting a bogus zero charge.
-        let p = StaticChatProvider::new("summary text");
-        let prompt = ChatPrompt {
-            system: "sys".into(),
-            user: "u".into(),
-            temperature: 0.0,
-            kind: "test",
-            max_tokens: None,
-        };
-        let (text, usage) = p.chat_for_text_with_usage(&prompt).await.unwrap();
-        assert_eq!(text, "summary text");
-        assert!(usage.is_none());
-    }
-}
+#[path = "chat_runtime_override.rs"]
+mod runtime_override;
+#[path = "chat_test_support.rs"]
+mod test_support;

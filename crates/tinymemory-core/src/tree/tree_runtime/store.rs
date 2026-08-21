@@ -119,3 +119,7 @@ pub fn buffer_drain(config: &Config, namespace: &str) -> Result<Vec<(String, Str
 pub fn parse_node_markdown_pub(raw: &str, namespace: &str, node_id: &str) -> Result<TreeNode> {
     crate::engine::backend::tree::runtime::store::parse_node_markdown_pub(raw, namespace, node_id)
 }
+
+#[cfg(test)]
+#[path = "store_tests.rs"]
+mod tests;

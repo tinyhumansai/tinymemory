@@ -298,3 +298,7 @@ async fn fetch_issue_comments(
         })
         .collect()
 }
+
+#[cfg(test)]
+#[path = "issues_tests.rs"]
+mod tests;

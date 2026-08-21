@@ -123,3 +123,7 @@ pub(crate) fn install(connection: Connection) {
     tinymemory_core::observability::set_error_reporter(Arc::clone(&host) as Arc<dyn ErrorReporter>);
     tinymemory_core::nlp_host::set_nlp_host(host);
 }
+
+#[cfg(test)]
+#[path = "host_test.rs"]
+mod test;

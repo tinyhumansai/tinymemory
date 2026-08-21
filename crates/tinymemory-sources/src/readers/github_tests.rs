@@ -1,5 +1,372 @@
 use super::*;
 use crate::raw_kind::RawKind;
+use crate::readers::SourceReader;
+
+fn github_source(url: Option<&str>) -> MemorySourceEntry {
+    MemorySourceEntry {
+        id: "github".into(),
+        kind: SourceKind::GithubRepo,
+        label: "GitHub".into(),
+        enabled: true,
+        toolkit: None,
+        connection_id: None,
+        path: None,
+        glob: None,
+        url: url.map(str::to_string),
+        branch: None,
+        paths: Vec::new(),
+        max_commits: Some(10),
+        max_issues: Some(0),
+        max_prs: Some(0),
+        query: None,
+        since_days: None,
+        max_items: None,
+        selector: None,
+        max_tokens_per_sync: None,
+        max_cost_per_sync_usd: None,
+        sync_depth_days: None,
+    }
+}
+
+fn local_git(cwd: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args(["-c", "commit.gpgsign=false"])
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("spawn git");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[tokio::test]
+async fn reader_lists_and_reads_a_cached_local_repository_without_network() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let source_repo = workspace.path().join("source");
+    std::fs::create_dir_all(&source_repo).expect("source directory");
+    local_git(&source_repo, &["init", "-q"]);
+    local_git(&source_repo, &["config", "user.email", "test@example.com"]);
+    local_git(&source_repo, &["config", "user.name", "Test"]);
+    std::fs::write(source_repo.join("README.md"), "hello").expect("write file");
+    local_git(&source_repo, &["add", "."]);
+    local_git(&source_repo, &["commit", "-qm", "local activity"]);
+
+    let cache = git::git_cache_dir(workspace.path(), "local", "fixture");
+    std::fs::create_dir_all(cache.parent().expect("cache parent")).expect("cache parent");
+    local_git(
+        workspace.path(),
+        &[
+            "clone",
+            "--bare",
+            "-q",
+            source_repo.to_str().expect("source path"),
+            cache.to_str().expect("cache path"),
+        ],
+    );
+
+    let source = github_source(Some("https://github.com/local/fixture"));
+    let reader = GithubReader;
+    assert_eq!(reader.kind(), SourceKind::GithubRepo);
+    let items = reader
+        .list_items(&source, workspace.path())
+        .await
+        .expect("list local cached activity");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].title, "local activity");
+
+    let content = reader
+        .read_item(&source, &items[0].id, workspace.path())
+        .await
+        .expect("read cached commit");
+    assert_eq!(content.title, "local activity");
+    assert!(content.body.contains("Test <test@example.com>"));
+}
+
+#[tokio::test]
+async fn reader_rejects_missing_urls_and_malformed_item_ids_before_network() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let reader = GithubReader;
+    let missing = github_source(None);
+    assert!(reader.list_items(&missing, workspace.path()).await.is_err());
+    assert!(reader
+        .read_item(&missing, "commit:abc", workspace.path())
+        .await
+        .is_err());
+
+    let configured = github_source(Some("https://github.com/local/fixture"));
+    for item_id in ["unknown", "issue:not-a-number", "pr:not-a-number"] {
+        assert!(reader
+            .read_item(&configured, item_id, workspace.path())
+            .await
+            .is_err());
+    }
+}
+
+fn issue_json(number: u64) -> serde_json::Value {
+    serde_json::json!({
+        "number": number,
+        "title": "Reader issue",
+        "body": "Issue body",
+        "state": "open",
+        "user": {"login": "alice"},
+        "labels": [{"name": "coverage"}],
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-02T00:00:00Z",
+        "pull_request": null
+    })
+}
+
+fn pr_json(number: u64) -> serde_json::Value {
+    serde_json::json!({
+        "number": number,
+        "title": "Reader PR",
+        "body": "PR body",
+        "state": "closed",
+        "user": {"login": "bob"},
+        "labels": [],
+        "created_at": "2026-01-03T00:00:00Z",
+        "updated_at": "2026-01-04T00:00:00Z",
+        "merged_at": null
+    })
+}
+
+#[tokio::test]
+async fn reader_orchestrates_issue_and_pr_cache_lifecycles_without_network() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let mut source = github_source(Some("https://github.com/local/fixture"));
+    source.max_commits = Some(0);
+    source.max_issues = Some(5);
+    source.max_prs = Some(5);
+    let reader = GithubReader;
+
+    let items = api::with_test_responses(
+        vec![
+            Ok(serde_json::json!([issue_json(7)]).to_string()),
+            Ok(serde_json::json!([pr_json(8)]).to_string()),
+        ],
+        reader.list_items(&source, workspace.path()),
+    )
+    .await
+    .expect("list issue and PR through reader");
+    assert_eq!(
+        items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        ["issue:7", "pr:8"]
+    );
+
+    let issue = api::with_test_responses(
+        vec![Ok("[]".into())],
+        reader.read_item(&source, "issue:7", workspace.path()),
+    )
+    .await
+    .expect("read cached issue");
+    assert_eq!(issue.title, "#7 Reader issue");
+
+    let pr = api::with_test_responses(
+        vec![Ok("[]".into())],
+        reader.read_item(&source, "pr:8", workspace.path()),
+    )
+    .await
+    .expect("read cached PR");
+    assert_eq!(pr.title, "PR #8 Reader PR");
+}
+
+#[tokio::test]
+async fn reader_reports_when_every_configured_github_family_fails() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let mut source = github_source(Some("https://github.com/local/fixture"));
+    source.max_commits = Some(0);
+    source.max_issues = Some(1);
+    source.max_prs = Some(1);
+
+    let error = api::with_test_responses(
+        vec![Err("issues offline".into()), Err("prs offline".into())],
+        GithubReader.list_items(&source, workspace.path()),
+    )
+    .await
+    .expect_err("all configured families failed");
+    assert!(error.to_string().contains("all GitHub API calls failed"));
+    assert!(error.to_string().contains("issues offline"));
+    assert!(error.to_string().contains("prs offline"));
+}
+
+fn commit_json(sha: &str, message: &str, login: Option<&str>) -> String {
+    let committed_at = if sha == "new" {
+        "2026-02-02T00:00:00Z"
+    } else {
+        "2026-01-02T00:00:00Z"
+    };
+    let author = login
+        .map(|value| serde_json::json!({ "login": value }))
+        .unwrap_or(serde_json::Value::Null);
+    serde_json::json!({
+        "sha": sha,
+        "commit": {
+            "message": message,
+            "author": {
+                "name": "Test Author",
+                "email": "author@example.com",
+                "date": "2026-01-01T00:00:00Z"
+            },
+            "committer": {
+                "name": "Test Committer",
+                "email": "committer@example.com",
+                "date": committed_at
+            }
+        },
+        "author": author
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn api_commit_fallback_lists_merges_and_renders_without_network() {
+    let older = commit_json("old", "older commit\nbody", None);
+    let newer = commit_json("new", "newer commit\nbody", Some("octocat"));
+    let listed = api::with_test_responses(
+        vec![Ok(format!("[{older}]")), Ok(format!("[{newer},{older}]"))],
+        api::list_commits_api(
+            "owner",
+            "repo",
+            10,
+            false,
+            Some("main"),
+            &["docs/".into(), "src/".into()],
+        ),
+    )
+    .await
+    .expect("list commits from deterministic API pages");
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0].id, "commit:new");
+    assert_eq!(listed[1].id, "commit:old");
+
+    let content = api::with_test_responses(
+        vec![Ok(commit_json(
+            "new",
+            "newer commit\nfull body",
+            Some("octocat"),
+        ))],
+        api::read_commit_api("owner", "repo", "new", false),
+    )
+    .await
+    .expect("read deterministic commit");
+    assert_eq!(content.title, "newer commit");
+    assert!(content
+        .body
+        .contains("Test Author <author@example.com> (@octocat)"));
+    assert_eq!(content.metadata["author_handle"], "octocat");
+}
+
+#[tokio::test]
+async fn api_commit_fallback_reports_transport_and_parse_failures_without_network() {
+    let transport = api::with_test_responses(
+        vec![Err("offline".into())],
+        api::list_commits_api("owner", "repo", 1, false, None, &[]),
+    )
+    .await
+    .expect_err("transport error");
+    assert_eq!(transport, "offline");
+
+    let list_parse = api::with_test_responses(
+        vec![Ok("not json".into())],
+        api::list_commits_api("owner", "repo", 1, false, None, &[]),
+    )
+    .await
+    .expect_err("list parse error");
+    assert!(list_parse.contains("parse commits page 1"));
+
+    let read_parse = api::with_test_responses(
+        vec![Ok("{}".into())],
+        api::read_commit_api("owner", "repo", "bad", false),
+    )
+    .await
+    .expect_err("commit parse error");
+    assert!(read_parse.contains("parse commit"));
+
+    let exhausted = api::with_test_responses(
+        Vec::new(),
+        api::read_commit_api("owner", "repo", "missing", false),
+    )
+    .await
+    .expect_err("fixture exhaustion fails closed");
+    assert!(exhausted.contains("no deterministic GitHub response queued"));
+}
+
+#[tokio::test]
+async fn reader_falls_back_from_a_broken_local_cache_to_the_api_without_network() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let cache = git::git_cache_dir(workspace.path(), "owner", "repo");
+    std::fs::create_dir_all(&cache).expect("cache directory");
+    std::fs::write(cache.join("HEAD"), "not a git repository").expect("broken cache marker");
+
+    let mut source = github_source(Some("https://github.com/owner/repo"));
+    source.max_commits = Some(5);
+    source.max_issues = Some(0);
+    source.max_prs = Some(0);
+    let reader = GithubReader;
+
+    let listed = api::with_test_responses(
+        vec![Ok(format!(
+            "[{}]",
+            commit_json("fallback", "API fallback commit", Some("octocat"))
+        ))],
+        reader.list_items(&source, workspace.path()),
+    )
+    .await
+    .expect("broken git cache falls back to API list");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, "commit:fallback");
+
+    let content = api::with_test_responses(
+        vec![Ok(commit_json(
+            "fallback",
+            "API fallback commit\nfull body",
+            Some("octocat"),
+        ))],
+        reader.read_item(&source, "commit:fallback", workspace.path()),
+    )
+    .await
+    .expect("broken git cache falls back to API read");
+    assert_eq!(content.id, "commit:fallback");
+    assert!(content.body.contains("full body"));
+    assert_eq!(content.metadata["author_handle"], "octocat");
+}
+
+#[tokio::test]
+async fn reader_keeps_successful_families_when_commit_transports_fail() {
+    let workspace = tempfile::tempdir().expect("workspace");
+    let cache = git::git_cache_dir(workspace.path(), "owner", "repo");
+    std::fs::create_dir_all(&cache).expect("cache directory");
+    std::fs::write(cache.join("HEAD"), "not a git repository").expect("broken cache marker");
+
+    let mut source = github_source(Some("https://github.com/owner/repo"));
+    source.max_commits = Some(1);
+    source.max_issues = Some(1);
+    source.max_prs = Some(0);
+
+    let items = api::with_test_responses(
+        vec![
+            Err("commit API offline".into()),
+            Ok(serde_json::json!([issue_json(7)]).to_string()),
+        ],
+        GithubReader.list_items(&source, workspace.path()),
+    )
+    .await
+    .expect("a successful issue family makes the partial result usable");
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].id, "issue:7");
+    assert_eq!(items[0].title, "#7 Reader issue");
+}
 
 #[test]
 fn git_log_args_default_to_head_without_branch() {

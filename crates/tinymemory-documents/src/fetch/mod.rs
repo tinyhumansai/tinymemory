@@ -53,6 +53,15 @@ pub async fn fetch_url(url: &str) -> Result<RawDocument> {
         .await
         .map_err(|error| MemoryError::Unreachable(format!("fetching {url:?}: {error}")))?;
 
+    response_to_document(url, parsed, response).await
+}
+
+/// Validate and convert a completed HTTP response.
+async fn response_to_document(
+    url: &str,
+    parsed: reqwest::Url,
+    response: reqwest::Response,
+) -> Result<RawDocument> {
     let status = response.status();
     if !status.is_success() {
         return Err(MemoryError::Backend(format!(

@@ -2,8 +2,23 @@
 
 use super::normalization::{extract_notion_cursor, extract_page_title, extract_results};
 use super::NotionProvider;
-use crate::sync::composio::providers::ComposioProvider;
+use crate::sync::composio::providers::{
+    ComposioProvider, ComposioUsageHandle, ProviderContext, TaskFetchFilter,
+};
 use serde_json::json;
+use std::sync::Arc;
+
+fn context(connection_id: Option<&str>) -> ProviderContext {
+    ProviderContext {
+        config: Arc::new(tinymemory_api::host::test_support::TestHostConfig::default())
+            as Arc<crate::Config>,
+        toolkit: "notion".into(),
+        connection_id: connection_id.map(str::to_string),
+        usage: ComposioUsageHandle::default(),
+        max_items: None,
+        sync_depth_days: None,
+    }
+}
 
 #[test]
 fn extract_results_walks_common_shapes() {
@@ -116,4 +131,66 @@ fn parse_database_results_handles_data_wrapper_and_empty() {
     assert_eq!(dbs[0].title, "Wrapped");
 
     assert!(parse_database_results(&json!({ "results": [] })).is_empty());
+}
+
+#[tokio::test]
+async fn provider_io_methods_fail_with_action_context_without_host() {
+    let provider = NotionProvider::new();
+    assert!(provider
+        .fetch_user_profile(&context(Some("connection-1")))
+        .await
+        .unwrap_err()
+        .contains("NOTION_GET_ABOUT_ME"));
+    assert!(provider
+        .fetch_tasks(
+            &context(Some("connection-1")),
+            &TaskFetchFilter {
+                database_id: Some(" database-1 ".into()),
+                max: 4,
+                extra: json!({"archived": false}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err()
+        .contains("NOTION_QUERY_DATABASE"));
+    assert!(provider
+        .fetch_tasks(&context(Some("connection-1")), &TaskFetchFilter::default())
+        .await
+        .unwrap_err()
+        .contains("NOTION_FETCH_DATA"));
+    assert!(provider
+        .list_databases(&context(Some("connection-1")))
+        .await
+        .unwrap_err()
+        .contains("NOTION_SEARCH_NOTION_PAGE"));
+    assert!(provider
+        .on_trigger(&context(None), "PAGE_UPDATED", &json!({}))
+        .await
+        .unwrap_err()
+        .contains("missing connection_id"));
+}
+
+#[test]
+fn page_normalization_covers_properties_and_fallbacks() {
+    use super::provider::normalize_notion_page;
+
+    assert!(normalize_notion_page(&json!({"title": "missing id"})).is_none());
+    let page = normalize_notion_page(&json!({
+        "pageId": "page-7",
+        "properties": {
+            "Status": {"status": {"name": "In progress"}},
+            "Assignee": {"people": [{"name": "Alice"}]},
+            "Due": {"date": {"start": "2026-08-21"}},
+            "Priority": {"select": {"name": "High"}}
+        },
+        "lastEditedTime": "2026-08-20T12:00:00Z"
+    }))
+    .unwrap();
+    assert_eq!(page.external_id, "page-7");
+    assert_eq!(page.title, "Notion page page-7");
+    assert_eq!(page.status.as_deref(), Some("In progress"));
+    assert_eq!(page.assignee.as_deref(), Some("Alice"));
+    assert_eq!(page.due.as_deref(), Some("2026-08-21"));
+    assert_eq!(page.priority.as_deref(), Some("High"));
 }

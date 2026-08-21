@@ -333,3 +333,81 @@ fn selection_reads_the_engine_field_and_not_the_model_routing_one() {
         .expect("model routing must not affect engine selection");
     assert_eq!(admission.id, TINYCORTEX_DRIVER_ID);
 }
+
+#[test]
+fn classless_entries_use_reserved_classes_and_still_enforce_external_trust() {
+    let registry = DriverRegistry::builtin();
+    for id in [TINYCORTEX_DRIVER_ID, NAMESPACE_DRIVER_ID, NULL_DRIVER_ID] {
+        let admission = registry
+            .admit(id, Some(entry(None, "untrusted")), labels())
+            .expect("non-external reserved class admits without a class line");
+        assert_eq!(admission.id, id);
+        assert_eq!(
+            admission.class,
+            registry.reserved_class(id).expect("reserved class")
+        );
+    }
+
+    for id in [SUPERMEMORY_DRIVER_ID, MEM0_DRIVER_ID, COGNEE_DRIVER_ID] {
+        let refusal = registry
+            .admit(id, Some(entry(None, "untrusted")), labels())
+            .expect_err("external reserved ids remain fail-closed");
+        assert!(refusal.reason.contains("external driver is untrusted"));
+
+        let admission = registry
+            .admit(id, Some(entry(None, TRUSTED)), labels())
+            .expect("trusted external reserved id admits implicitly");
+        assert_eq!(admission.class, DriverClass::External);
+    }
+}
+
+#[test]
+fn explicit_classes_admit_unreserved_ids_without_guessing() {
+    let registry = DriverRegistry::empty();
+    for (raw, expected) in [
+        ("null", DriverClass::Null),
+        ("embedded", DriverClass::Embedded),
+        ("external", DriverClass::External),
+    ] {
+        let admission = registry
+            .admit("custom", Some(entry(Some(raw), TRUSTED)), labels())
+            .expect("explicit class admits an unreserved id");
+        assert_eq!(admission.id, "custom");
+        assert_eq!(admission.class, expected);
+    }
+}
+
+#[test]
+fn reservation_is_first_writer_wins_and_driver_ids_are_trimmed() {
+    let registry = DriverRegistry::empty()
+        .with_reserved("custom", DriverClass::Embedded)
+        .with_reserved("custom", DriverClass::Null);
+    assert_eq!(
+        registry.reserved_class("custom"),
+        Some(DriverClass::Embedded)
+    );
+    let admission = registry
+        .admit("  custom  ", None, labels())
+        .expect("trimmed reserved id admits");
+    assert_eq!(admission.id, "custom");
+    assert_eq!(admission.class, DriverClass::Embedded);
+}
+
+#[test]
+fn custom_labels_and_display_make_refusals_actionable() {
+    let labels = ConfigLabels {
+        section: "[memory]",
+        drivers: "[memory.backends]",
+        driver_entry: "[memory.backends.<id>]",
+    };
+    let refusal = DriverRegistry::empty()
+        .admit("missing", None, labels)
+        .expect_err("unknown id is refused");
+    assert!(refusal.reason.contains("no [memory.backends.<id>] entry"));
+    assert_eq!(
+        refusal.to_string(),
+        format!("driver 'missing' refused: {}", refusal.reason)
+    );
+    let as_error: &dyn std::error::Error = &refusal;
+    assert!(as_error.source().is_none());
+}

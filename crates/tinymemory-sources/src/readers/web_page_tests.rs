@@ -1,5 +1,62 @@
 use super::*;
 
+fn web_source(url: Option<&str>, selector: Option<&str>) -> MemorySourceEntry {
+    MemorySourceEntry {
+        id: "web".into(),
+        kind: SourceKind::WebPage,
+        label: "Reference page".into(),
+        enabled: true,
+        toolkit: None,
+        connection_id: None,
+        path: None,
+        glob: None,
+        url: url.map(str::to_string),
+        branch: None,
+        paths: Vec::new(),
+        max_commits: None,
+        max_issues: None,
+        max_prs: None,
+        query: None,
+        since_days: None,
+        max_items: None,
+        selector: selector.map(str::to_string),
+        max_tokens_per_sync: None,
+        max_cost_per_sync_usd: None,
+        sync_depth_days: None,
+    }
+}
+
+#[tokio::test]
+async fn reader_lists_one_configured_page_and_rejects_missing_or_private_reads() {
+    let reader = WebPageReader;
+    let workspace = tempfile::tempdir().unwrap();
+    assert_eq!(reader.kind(), SourceKind::WebPage);
+
+    let source = web_source(Some("https://example.com/docs"), Some("article"));
+    let items = reader.list_items(&source, workspace.path()).await.unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].id, "https://example.com/docs");
+    assert_eq!(items[0].title, "Reference page");
+
+    let missing = web_source(None, None);
+    assert!(reader.list_items(&missing, workspace.path()).await.is_err());
+    assert!(reader
+        .read_item(&missing, "not-an-http-id", workspace.path())
+        .await
+        .is_err());
+
+    for item in [
+        "http://[",
+        "http://127.0.0.1/private",
+        "http://service.internal/private",
+    ] {
+        assert!(reader
+            .read_item(&source, item, workspace.path())
+            .await
+            .is_err());
+    }
+}
+
 #[test]
 fn strip_html_tags_removes_tags() {
     let html = "<p>Hello <b>world</b></p>";

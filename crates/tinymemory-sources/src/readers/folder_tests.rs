@@ -149,3 +149,101 @@ async fn read_item_missing_file_errors() {
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("not found"));
 }
+
+#[tokio::test]
+async fn folder_source_without_a_path_is_rejected_for_list_and_read() {
+    let mut source = folder_source("unused");
+    source.path = None;
+    let reader = FolderReader;
+
+    for error in [
+        reader.list_items(&source, config()).await.unwrap_err(),
+        reader
+            .read_item(&source, "note.md", config())
+            .await
+            .unwrap_err(),
+    ] {
+        assert!(error.to_string().contains("folder source requires a path"));
+    }
+}
+
+#[tokio::test]
+async fn oversized_files_are_not_listed_and_cannot_be_read() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("huge.md");
+    let file = fs::File::create(&path).unwrap();
+    file.set_len(FOLDER_FILE_SIZE_CAP_BYTES + 1).unwrap();
+    drop(file);
+    let source = folder_source(&tmp.path().to_string_lossy());
+    let reader = FolderReader;
+
+    assert!(reader
+        .list_items(&source, config())
+        .await
+        .unwrap()
+        .is_empty());
+    let error = reader
+        .read_item(&source, "huge.md", config())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("file exceeds"));
+}
+
+#[tokio::test]
+async fn invalid_utf8_is_reported_instead_of_lossily_decoded() {
+    let tmp = TempDir::new().unwrap();
+    fs::write(tmp.path().join("binary.md"), [0xff, 0xfe, 0xfd]).unwrap();
+    let source = folder_source(&tmp.path().to_string_lossy());
+    let error = FolderReader
+        .read_item(&source, "binary.md", config())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().to_ascii_lowercase().contains("utf-8"));
+}
+
+#[tokio::test]
+async fn content_type_follows_the_file_extension() {
+    let tmp = TempDir::new().unwrap();
+    for (name, expected) in [
+        ("page.html", ContentType::Html),
+        ("legacy.htm", ContentType::Html),
+        ("notes.txt", ContentType::Plaintext),
+    ] {
+        fs::write(tmp.path().join(name), "body").unwrap();
+        let mut source = folder_source(&tmp.path().to_string_lossy());
+        source.glob = Some("*".to_string());
+        let content = FolderReader
+            .read_item(&source, name, config())
+            .await
+            .unwrap();
+        assert_eq!(content.content_type, expected);
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn symlinks_cannot_escape_the_configured_folder() {
+    use std::os::unix::fs::symlink;
+
+    let base = TempDir::new().unwrap();
+    let outside = TempDir::new().unwrap();
+    fs::write(outside.path().join("secret.md"), "secret").unwrap();
+    symlink(
+        outside.path().join("secret.md"),
+        base.path().join("escape.md"),
+    )
+    .unwrap();
+    let source = folder_source(&base.path().to_string_lossy());
+    let reader = FolderReader;
+
+    assert!(reader
+        .list_items(&source, config())
+        .await
+        .unwrap()
+        .is_empty());
+    let error = reader
+        .read_item(&source, "escape.md", config())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, MemoryError::PathEscape(_)), "got {error:?}");
+}

@@ -152,3 +152,7 @@ pub async fn run_hourly_loop(config: Arc<Config>, provider: Arc<dyn ChatModel<()
         }
     }
 }
+
+#[cfg(test)]
+#[path = "engine_tests.rs"]
+mod tests;

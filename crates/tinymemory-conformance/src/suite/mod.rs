@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use tinymemory_api::capabilities::Capability;
 use tinymemory_api::error::MemoryError;
-use tinymemory_api::provider::{audit_provider, ExportRecord, MemoryProvider};
+use tinymemory_api::provider::{audit_provider, ExportRecord, MemoryProvider, SourceScope};
 use tinymemory_api::recall::OwnedRecallOpts;
 use tinymemory_api::types::{MemoryCategory, MemoryTaint};
 
@@ -61,6 +61,7 @@ pub async fn assert_provider(provider: Arc<dyn MemoryProvider>) {
     assert_list_filters_narrow(p).await;
     assert_taint_is_preserved(p).await;
     assert_recall_respects_limit_and_namespace(p).await;
+    assert_recall_respects_source_scope(p).await;
     assert_export_import_round_trip(p).await;
     assert_awkward_content_round_trips(p).await;
     assert_kv_round_trip(p).await;
@@ -379,10 +380,11 @@ pub async fn assert_list_filters_narrow(provider: &dyn MemoryProvider) {
         .namespaces()
         .await
         .unwrap_or_else(|e| panic!("{who}: namespaces failed: {e}"));
-    let mine = summaries.iter().find(|s| s.namespace == ns);
-    if let Some(summary) = mine {
-        assert_eq!(summary.count, 2, "{who}: namespace summary miscounted");
-    }
+    let summary = summaries
+        .iter()
+        .find(|s| s.namespace == ns)
+        .unwrap_or_else(|| panic!("{who}: namespaces omitted a namespace containing two rows"));
+    assert_eq!(summary.count, 2, "{who}: namespace summary miscounted");
 
     cleanup(provider, &ns, &["core-a", "daily-b"]).await;
 }
@@ -470,6 +472,11 @@ pub async fn assert_recall_respects_limit_and_namespace(provider: &dyn MemoryPro
         "{who}: recall returned {} hits for a limit of 2",
         hits.len()
     );
+    assert_eq!(
+        hits.len(),
+        2,
+        "{who}: recall returned too few matching rows; an empty recall must not conform"
+    );
     for hit in &hits {
         assert_eq!(
             hit.namespace.as_deref(),
@@ -480,6 +487,45 @@ pub async fn assert_recall_respects_limit_and_namespace(provider: &dyn MemoryPro
 
     cleanup(provider, &mine, &keys).await;
     cleanup(provider, &theirs, &["other"]).await;
+}
+
+/// A present, empty source scope fails closed.
+///
+/// # Panics
+///
+/// Panics when a driver ignores an empty [`SourceScope`] and returns content.
+pub async fn assert_recall_respects_source_scope(provider: &dyn MemoryProvider) {
+    let who = provider.driver_id();
+    let ns = ns(provider, "recall-scope");
+    provider
+        .store(
+            &ns,
+            "scoped",
+            "source scoped needle",
+            MemoryCategory::Core,
+            None,
+            MemoryTaint::ExternalSync,
+        )
+        .await
+        .unwrap_or_else(|e| panic!("{who}: store failed: {e}"));
+    let opts = OwnedRecallOpts {
+        namespace: Some(ns.clone()),
+        ..Default::default()
+    };
+    match provider
+        .recall("needle", 8, &opts, Some(&SourceScope::default()))
+        .await
+    {
+        Ok(hits) => assert!(
+            hits.is_empty(),
+            "{who}: recall ignored an empty source scope and returned {hits:?}"
+        ),
+        // A driver whose recall path cannot apply the predicate must refuse
+        // the call. This is still fail-closed; answering it unscoped is not.
+        Err(MemoryError::Invalid(_)) => {}
+        Err(other) => panic!("{who}: scoped recall failed with the wrong error class: {other}"),
+    }
+    cleanup(provider, &ns, &["scoped"]).await;
 }
 
 /// Exported records re-import with their taint intact.
@@ -533,7 +579,22 @@ pub async fn assert_export_import_round_trip(provider: &dyn MemoryProvider) {
         .unwrap_or_else(|| panic!("{who}: export dropped the record's ExternalSync taint"));
     assert_eq!(exported.taint, MemoryTaint::ExternalSync);
 
-    provider.forget(&ns, "p1").await.ok();
+    let removed = provider
+        .forget(&ns, "p1")
+        .await
+        .unwrap_or_else(|e| panic!("{who}: forget before import failed: {e}"));
+    assert!(
+        removed,
+        "{who}: forget before import reported that the exported record was absent"
+    );
+    let absent = provider
+        .get(&ns, "p1")
+        .await
+        .unwrap_or_else(|e| panic!("{who}: get after forget failed: {e}"));
+    assert!(
+        absent.is_none(),
+        "{who}: record remained readable before import, so the restore was not verified"
+    );
     let outcome = provider
         .import_records(mine.clone())
         .await
@@ -550,13 +611,21 @@ pub async fn assert_export_import_round_trip(provider: &dyn MemoryProvider) {
         );
     }
 
-    if let Some(back) = provider.get(&ns, "p1").await.unwrap_or(None) {
-        assert_eq!(
-            back.taint,
-            MemoryTaint::ExternalSync,
-            "{who}: import re-stamped provenance instead of persisting what it was given"
-        );
-    }
+    assert_eq!(
+        outcome.imported as usize,
+        mine.len(),
+        "{who}: import did not report every accepted record"
+    );
+    let back = provider
+        .get(&ns, "p1")
+        .await
+        .unwrap_or_else(|e| panic!("{who}: get after import failed: {e}"))
+        .unwrap_or_else(|| panic!("{who}: import reported success but restored no record"));
+    assert_eq!(
+        back.taint,
+        MemoryTaint::ExternalSync,
+        "{who}: import re-stamped provenance instead of persisting what it was given"
+    );
     cleanup(provider, &ns, &["p1"]).await;
 }
 
@@ -581,12 +650,10 @@ pub async fn assert_export_cursor_terminates(provider: &dyn MemoryProvider) {
     // A cursor this driver never issued must be refused rather than silently
     // restarting the export from the beginning, which would duplicate rows.
     let bogus = provider.export_page(Some("!not-a-cursor!"), 8).await;
-    if let Ok(page) = bogus {
-        assert!(
-            page.records.is_empty(),
-            "{who}: an unrecognised cursor returned records instead of being refused"
-        );
-    }
+    assert!(
+        matches!(bogus, Err(MemoryError::Invalid(_))),
+        "{who}: an unrecognised cursor must return Invalid, got {bogus:?}"
+    );
 }
 
 /// Unicode, empty, and oversized content survive a round trip.

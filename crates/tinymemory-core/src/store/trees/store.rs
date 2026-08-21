@@ -207,3 +207,7 @@ pub fn upsert_buffer_tx(tx: &Transaction<'_>, buffer: &Buffer) -> Result<()> {
 pub fn list_stale_buffers(config: &Config, older_than: DateTime<Utc>) -> Result<Vec<Buffer>> {
     crate::engine::backend::tree::store::list_stale_buffers(&engine_config(config), older_than)
 }
+
+#[cfg(test)]
+#[path = "store_tests.rs"]
+mod tests;

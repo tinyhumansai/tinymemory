@@ -12,6 +12,7 @@ use axum::{
 };
 use serde_json::{json, Value};
 use tinymemory_api::{
+    capabilities::Capability,
     provider::{MemoryCore, MemoryProvider, MemoryRecall},
     recall::OwnedRecallOpts,
     types::{MemoryCategory, MemoryTaint},
@@ -163,6 +164,119 @@ async fn native_mem0_round_trips_the_tinymemory_contract() {
         .await
         .expect("forget again"));
     assert!(driver.health().await.is_usable());
+}
+
+#[tokio::test]
+async fn mem0_graph_filters_limits_and_exposes_only_supported_operations() {
+    let state = AppState::default();
+    let app = Router::new()
+        .route("/memories", get(list).post(add))
+        .route("/memories/{id}", put(update).delete(remove))
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let endpoint = format!("http://{}", listener.local_addr().expect("address"));
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+
+    let provider = crate::mem0_graph_provider(
+        super::Mem0Memory::self_hosted(&endpoint, None).expect("client"),
+    );
+    tinymemory_api::provider::audit_provider(&provider).expect("honest graph capability");
+    assert_eq!(provider.driver_id(), crate::MEM0_DRIVER_ID);
+    assert!(provider.capabilities().contains(Capability::Graph));
+
+    provider
+        .store(
+            "team",
+            "first",
+            "Alice met Bob. Alice introduced Carol.",
+            MemoryCategory::Core,
+            None,
+            MemoryTaint::Internal,
+        )
+        .await
+        .expect("delegated store");
+    provider
+        .store(
+            "other",
+            "second",
+            "Alice met Mallory.",
+            MemoryCategory::Core,
+            None,
+            MemoryTaint::Internal,
+        )
+        .await
+        .expect("other namespace store");
+
+    let graph = provider.as_graph().expect("advertised graph");
+    let relations = graph
+        .relations(Some("team"), Some("Alice"), Some("co_occurs_with"), 1)
+        .await
+        .expect("relations");
+    assert_eq!(relations.len(), 1, "the caller's limit is a hard cap");
+    assert_eq!(relations[0].subject, "Alice");
+    assert_eq!(relations[0].object, "Bob");
+    assert_eq!(relations[0].namespace.as_deref(), Some("team"));
+    assert_eq!(relations[0].document_ids, ["mem-1"]);
+    assert_eq!(relations[0].attrs["source"], "heuristic");
+    assert!(graph
+        .relations(Some("team"), None, Some("does_not_exist"), 10)
+        .await
+        .expect("predicate filter")
+        .is_empty());
+    assert!(graph
+        .relations(Some("team"), None, None, 0)
+        .await
+        .expect("zero limit")
+        .is_empty());
+
+    let relation = relations[0].clone();
+    let errors = [
+        graph.kv_get(Some("team"), "key").await.err(),
+        graph
+            .kv_put(Some("team"), "key", json!({"value": 1}))
+            .await
+            .err(),
+        graph.kv_delete(Some("team"), "key").await.err(),
+        graph.kv_list(Some("team"), None, 10).await.err(),
+        graph.put_relation(relation).await.err(),
+    ];
+    assert!(errors.iter().all(Option::is_some));
+    assert!(format!("{:#}", errors[0].as_ref().expect("kv error"))
+        .contains("no generic key/value store"));
+    assert!(format!("{:#}", errors[4].as_ref().expect("relation error"))
+        .contains("cannot be edited directly"));
+}
+
+#[tokio::test]
+async fn mem0_graph_propagates_listing_failures() {
+    let app = Router::new().route(
+        "/memories",
+        get(|| async { (StatusCode::BAD_REQUEST, "invalid namespace") }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let endpoint = format!("http://{}", listener.local_addr().expect("address"));
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+
+    let provider = crate::mem0_graph_provider(
+        super::Mem0Memory::self_hosted(&endpoint, None).expect("client"),
+    );
+    let error = provider
+        .as_graph()
+        .expect("graph")
+        .relations(Some("team"), None, None, 10)
+        .await
+        .expect_err("listing failure must propagate");
+    let rendered = format!("{error:#}");
+    assert!(rendered.contains("HTTP 400"), "{rendered}");
+    assert!(rendered.contains("invalid namespace"), "{rendered}");
 }
 
 /// Issue #69: a self-hosted keyed read scopes the listing to the namespace's

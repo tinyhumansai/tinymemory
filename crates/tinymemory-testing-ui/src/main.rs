@@ -6,7 +6,9 @@
 //! `store`/`recall`/`list`/`export` against it directly. See this crate's
 //! `README.md` for how to run it.
 
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use axum::extract::{Multipart, Query, State};
@@ -28,9 +30,17 @@ use tinymemory_documents::ingest::{DocumentIntake, IntakeRequest};
 
 struct AppState {
     active: RwLock<Option<Arc<dyn MemoryProvider>>>,
+    url_fetcher: UrlFetcher,
 }
 
 type SharedState = Arc<AppState>;
+type FetchFuture =
+    Pin<Box<dyn Future<Output = Result<RawDocument, tinymemory_api::error::MemoryError>> + Send>>;
+type UrlFetcher = Arc<dyn Fn(String) -> FetchFuture + Send + Sync>;
+
+fn guarded_url_fetcher() -> UrlFetcher {
+    Arc::new(|url| Box::pin(async move { tinymemory_documents::fetch::fetch_url(&url).await }))
+}
 
 /// A JSON-friendly wrapper around [`tinymemory_api::error::MemoryError`] and
 /// this harness's own connection-state errors.
@@ -467,15 +477,12 @@ async fn document_formats(State(state): State<SharedState>) -> Result<Response, 
         .into_iter()
         .map(|format| format.to_string())
         .collect();
-    let route = match state.active.read().await.as_ref() {
-        Some(provider) => Some(
-            DocumentIntake::new(provider.as_ref(), &chain)
-                .route()
-                .as_str()
-                .to_string(),
-        ),
-        None => None,
-    };
+    let route = state.active.read().await.as_ref().map(|provider| {
+        DocumentIntake::new(provider.as_ref(), &chain)
+            .route()
+            .as_str()
+            .to_string()
+    });
     Ok(Json(serde_json::json!({ "formats": formats, "route": route })).into_response())
 }
 
@@ -594,7 +601,10 @@ async fn ingest_url(
     Json(req): Json<UrlIngestRequest>,
 ) -> Result<Response, ApiError> {
     let provider = current(&state).await?;
-    let document = tinymemory_documents::fetch::fetch_url(&req.url).await?;
+    let url = validate_ingest_url(&req.url)?;
+    let document = (state.url_fetcher)(url)
+        .await
+        .map_err(safe_url_fetch_error)?;
     let request = intake_request(
         IntakeRequest::from_url(req.namespace),
         req.key,
@@ -607,6 +617,42 @@ async fn ingest_url(
         .accept(&document, &request)
         .await?;
     Ok(Json(receipt).into_response())
+}
+
+/// Preserve the fetch error's HTTP class without reflecting its URL. Query
+/// strings often carry signed tokens, and the fetch layer includes its input
+/// URL in diagnostic errors intended for trusted library callers.
+fn safe_url_fetch_error(error: tinymemory_api::error::MemoryError) -> ApiError {
+    use tinymemory_api::error::MemoryError;
+
+    let message = match &error {
+        MemoryError::Invalid(_) => "URL is not an allowed fetch target",
+        MemoryError::BudgetExceeded(_) => "URL response exceeds document size limit",
+        _ => "URL fetch failed",
+    };
+    let ApiError(status, _) = ApiError::from(error);
+    ApiError(status, message.to_string())
+}
+
+/// Validate sensitive URL fields before the fetch layer can include them in
+/// an error. The document fetcher remains responsible for SSRF, redirects,
+/// DNS pinning, and response-size policy.
+fn validate_ingest_url(raw: &str) -> Result<String, ApiError> {
+    let url = url::Url::parse(raw)
+        .map_err(|_| ApiError(StatusCode::BAD_REQUEST, "invalid URL".to_string()))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "URL scheme must be http or https".to_string(),
+        ));
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "URL credentials are not allowed".to_string(),
+        ));
+    }
+    Ok(url.to_string())
 }
 
 /// Apply the optional intake fields both intake endpoints share.
@@ -634,15 +680,7 @@ fn intake_request(
     Ok(request)
 }
 
-#[tokio::main]
-async fn main() {
-    let state: SharedState = Arc::new(AppState {
-        active: RwLock::new(None),
-    });
-
-    let web_dir = std::env::var("TINYMEMORY_TESTING_UI_WEB")
-        .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/web").to_string());
-
+fn app(state: SharedState, web_dir: impl Into<String>) -> Router {
     let api = Router::new()
         .route("/connect", post(connect))
         .route("/disconnect", post(disconnect))
@@ -661,9 +699,22 @@ async fn main() {
         .route("/ingest/url", post(ingest_url))
         .with_state(state);
 
-    let app = Router::new()
+    Router::new()
         .nest("/api", api)
-        .fallback_service(ServeDir::new(web_dir));
+        .fallback_service(ServeDir::new(web_dir.into()))
+}
+
+#[tokio::main]
+async fn main() {
+    let state: SharedState = Arc::new(AppState {
+        active: RwLock::new(None),
+        url_fetcher: guarded_url_fetcher(),
+    });
+
+    let web_dir = std::env::var("TINYMEMORY_TESTING_UI_WEB")
+        .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/web").to_string());
+
+    let app = app(state, web_dir);
 
     let addr: SocketAddr = std::env::var("TINYMEMORY_TESTING_UI_ADDR")
         .ok()
@@ -676,3 +727,6 @@ async fn main() {
         .expect("bind testing UI address");
     axum::serve(listener, app).await.expect("serve testing UI");
 }
+
+#[cfg(test)]
+mod test;

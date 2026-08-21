@@ -130,3 +130,83 @@ async fn fetch_existing_bare_advances_local_heads() {
         "fetch must advance refs/heads/* so git log --all sees new commits"
     );
 }
+
+#[tokio::test]
+async fn local_bare_clone_lists_filters_and_renders_commits() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let src = tmp.path().join("src");
+    init_repo(&src);
+    std::fs::create_dir_all(src.join("docs")).expect("docs dir");
+    std::fs::write(src.join("docs/guide.md"), "guide").expect("write guide");
+    git_ok(&src, &["add", "."]);
+    git_ok(&src, &["commit", "-qm", "document the project"]);
+
+    let cache = tmp.path().join("cache.git");
+    git_ok(
+        tmp.path(),
+        &[
+            "clone",
+            "--bare",
+            "-q",
+            src.to_str().expect("source path"),
+            cache.to_str().expect("cache path"),
+        ],
+    );
+
+    let items = list_commits_git(
+        "local-owner",
+        "local-repo",
+        10,
+        &cache,
+        None,
+        &["docs/".to_string()],
+    )
+    .await
+    .expect("list local commits");
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].title, "document the project");
+    let sha = items[0].id.strip_prefix("commit:").expect("commit id");
+
+    let content = read_commit_git("local-owner", "local-repo", sha, &cache)
+        .await
+        .expect("render commit");
+    assert_eq!(content.id, items[0].id);
+    assert_eq!(content.title, "document the project");
+    assert!(content.body.contains("Test <test@example.com>"));
+    assert_eq!(content.metadata["owner"], "local-owner");
+    assert_eq!(content.metadata["repo"], "local-repo");
+}
+
+#[tokio::test]
+async fn git_helpers_surface_missing_cache_ref_and_process_failures() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let missing = tmp.path().join("missing.git");
+    assert!(read_commit_git("owner", "repo", "deadbeef", &missing)
+        .await
+        .expect_err("missing cache")
+        .contains("not present"));
+
+    let src = tmp.path().join("src");
+    init_repo(&src);
+    let cache = tmp.path().join("cache.git");
+    git_ok(
+        tmp.path(),
+        &[
+            "clone",
+            "--bare",
+            "-q",
+            src.to_str().expect("source path"),
+            cache.to_str().expect("cache path"),
+        ],
+    );
+    assert!(read_commit_git("owner", "repo", "not-a-ref", &cache)
+        .await
+        .expect_err("unknown ref")
+        .contains("git show exited"));
+    assert!(
+        list_commits_git("owner", "repo", 10, &cache, Some("missing"), &[])
+            .await
+            .expect_err("unknown branch")
+            .contains("git log exited")
+    );
+}

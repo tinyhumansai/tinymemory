@@ -13,6 +13,7 @@ use axum::{
 };
 use serde_json::{json, Value};
 use tinymemory_api::{
+    capabilities::Capability,
     provider::{MemoryCore, MemoryGraph, MemoryProvider, MemoryRecall},
     recall::OwnedRecallOpts,
     traits::Memory,
@@ -199,6 +200,175 @@ async fn cognee_graph_supports_cloud_api_keys_and_self_hosted_bearer_tokens() {
     assert_eq!(hosted_headers["authorization"], "Bearer local-secret");
     assert!(hosted_headers["api_key"].is_null());
     assert!(crate::CogneeGraph::api(&endpoint, "  ").is_err());
+}
+
+#[tokio::test]
+async fn cognee_graph_maps_filters_and_limits_native_edges() {
+    let graph_calls = Arc::new(Mutex::new(0_usize));
+    let calls = graph_calls.clone();
+    let app = Router::new()
+        .route(
+            "/api/v1/datasets/",
+            get(|| async {
+                Json(json!([{
+                    "id": "dataset-1",
+                    "name": super::CogneeDialect::dataset_name("project")
+                }]))
+            }),
+        )
+        .route(
+            "/api/v1/datasets/dataset-1/graph",
+            get(move || {
+                let calls = calls.clone();
+                async move {
+                    *calls.lock().expect("calls") += 1;
+                    Json(json!({
+                        "nodes": [
+                            {"id": "alice", "label": "Alice"},
+                            {"id": "bob", "label": "Bob"},
+                            {"id": "carol", "label": "Carol"}
+                        ],
+                        "edges": [
+                            {"source": "alice", "target": "bob", "label": "knows"},
+                            {"source": "alice", "target": "carol", "label": "manages"},
+                            {"source": "unknown", "target": "bob", "label": null},
+                            {"source": 12, "target": "bob", "label": "malformed"}
+                        ]
+                    }))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let endpoint = format!("http://{}", listener.local_addr().expect("address"));
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+
+    let graph = crate::CogneeGraph::new(&endpoint, None).expect("client");
+    let relations = graph
+        .relations(Some("project"), Some("Alice"), None, 1)
+        .await
+        .expect("filtered relations");
+    assert_eq!(relations.len(), 1);
+    assert_eq!(relations[0].subject, "Alice");
+    assert_eq!(relations[0].predicate, "knows");
+    assert_eq!(relations[0].object, "Bob");
+    assert_eq!(relations[0].namespace.as_deref(), Some("project"));
+
+    let fallback = graph
+        .relations(Some("project"), Some("unknown"), Some(""), 10)
+        .await
+        .expect("id fallback");
+    assert_eq!(fallback.len(), 1);
+    assert_eq!(fallback[0].object, "Bob");
+    assert_eq!(*graph_calls.lock().expect("calls"), 2);
+}
+
+#[tokio::test]
+async fn cognee_graph_rejects_unscoped_queries_and_unsupported_mutations() {
+    let app = Router::new().route("/api/v1/datasets/", get(|| async { Json(json!([])) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let endpoint = format!("http://{}", listener.local_addr().expect("address"));
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+    let graph = crate::CogneeGraph::new(&endpoint, None).expect("client");
+
+    let error = graph
+        .relations(None, None, None, 10)
+        .await
+        .expect_err("namespace is required");
+    assert!(matches!(
+        error,
+        tinymemory_api::error::MemoryError::Invalid(_)
+    ));
+    assert!(graph
+        .relations(Some("missing"), None, None, 10)
+        .await
+        .expect("missing dataset")
+        .is_empty());
+
+    let relation = tinymemory_api::types::GraphRelationRecord {
+        namespace: Some("project".into()),
+        subject: "Alice".into(),
+        predicate: "knows".into(),
+        object: "Bob".into(),
+        attrs: Value::Null,
+        updated_at: 0.0,
+        evidence_count: 1,
+        order_index: None,
+        document_ids: Vec::new(),
+        chunk_ids: Vec::new(),
+    };
+    let errors = [
+        graph.kv_get(Some("project"), "key").await.err(),
+        graph.kv_put(Some("project"), "key", json!(1)).await.err(),
+        graph.kv_delete(Some("project"), "key").await.err(),
+        graph.kv_list(Some("project"), None, 10).await.err(),
+        graph.put_relation(relation).await.err(),
+    ];
+    assert!(errors.iter().all(Option::is_some));
+    assert!(format!("{:#}", errors[0].as_ref().expect("kv error"))
+        .contains("no generic key/value store"));
+    assert!(format!("{:#}", errors[4].as_ref().expect("relation error"))
+        .contains("cannot be edited directly"));
+}
+
+#[tokio::test]
+async fn cognee_graph_provider_advertises_an_auditable_graph() {
+    let app = Router::new().route("/api/v1/datasets/", get(|| async { Json(json!([])) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let endpoint = format!("http://{}", listener.local_addr().expect("address"));
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+
+    let memory = super::CogneeMemory::self_hosted(&endpoint, None).expect("memory client");
+    let provider = crate::cognee_graph_provider(memory, &endpoint, None).expect("graph provider");
+    tinymemory_api::provider::audit_provider(&provider).expect("honest graph capability");
+    assert_eq!(provider.driver_id(), crate::COGNEE_DRIVER_ID);
+    assert!(provider.capabilities().contains(Capability::Graph));
+    assert!(provider.as_graph().is_some());
+}
+
+#[tokio::test]
+async fn cognee_graph_surfaces_http_failures_without_parsing_them_as_empty() {
+    let app = Router::new()
+        .route(
+            "/api/v1/datasets/",
+            get(|| async {
+                Json(json!([{
+                    "id": "dataset-1",
+                    "name": super::CogneeDialect::dataset_name("project")
+                }]))
+            }),
+        )
+        .route(
+            "/api/v1/datasets/dataset-1/graph",
+            get(|| async { (StatusCode::BAD_REQUEST, "graph unavailable") }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let endpoint = format!("http://{}", listener.local_addr().expect("address"));
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+
+    let error = crate::CogneeGraph::new(&endpoint, None)
+        .expect("client")
+        .relations(Some("project"), None, None, 10)
+        .await
+        .expect_err("HTTP failure must propagate");
+    let rendered = format!("{error:#}");
+    assert!(rendered.contains("HTTP 400"), "{rendered}");
+    assert!(rendered.contains("graph unavailable"), "{rendered}");
 }
 
 #[test]

@@ -15,6 +15,9 @@ mod slack;
 mod slack_parse;
 mod todoist;
 
+#[cfg(test)]
+mod provider_tests;
+
 pub use clickup::ClickUpSyncPipeline;
 pub use github::GitHubSyncPipeline;
 pub use google_calendar::GoogleCalendarSyncPipeline;

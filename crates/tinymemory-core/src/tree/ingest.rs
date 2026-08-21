@@ -65,3 +65,7 @@ pub async fn ingest_summary(
     );
     Ok(outcome)
 }
+
+#[cfg(test)]
+#[path = "ingest_tests.rs"]
+mod tests;

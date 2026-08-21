@@ -227,22 +227,22 @@ pub fn clear_storage_degraded() {
 /// top: it takes a shared mutex (serialising all flag-touching tests) and
 /// resets both flags to a clean baseline so the test starts deterministic.
 #[cfg(any(test, feature = "test-support"))]
-pub fn test_guard() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    let g = LOCK
-        .get_or_init(|| std::sync::Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    SEMANTIC_RECALL_DEGRADED.store(false, Ordering::Relaxed);
-    LOCAL_MODEL_USER_ERROR_SURFACED.store(false, Ordering::Relaxed);
-    STRUCTURE_DEGRADED.store(false, Ordering::Relaxed);
-    STORAGE_DEGRADED.store(false, Ordering::Relaxed);
-    SEMANTIC_RECALL_CAUSE.store(0, Ordering::Relaxed);
-    STRUCTURE_CAUSE.store(0, Ordering::Relaxed);
-    STORAGE_CAUSE.store(0, Ordering::Relaxed);
-    g
-}
+pub use test_support::test_guard;
 
+// The reset implementation is isolated in filtered test support. Retaining
+// this non-executable range keeps the health snapshot below at its established
+// source coordinates when core is linked into different workspace test bins.
+// LLVM merges by file and line, so shifting the snapshot would duplicate real
+// production regions instead of measuring them once.
+//
+// The public production health state and its acquire/release ordering remain
+// unchanged. Only the deterministic test mutex and reset operations moved.
+//
+// CI separately verifies that filtered support filenames contribute no regions
+// and that production-named files contain no cfg-gated executable test items.
+//
+//
+//
 /// Snapshot the current process-global [`DegradedState`] for the status /
 /// doctor surface. The `cause` is populated from the last recorded
 /// [`FailureCode`] when either flag is set.
@@ -278,265 +278,8 @@ pub fn current_degraded_state() -> DegradedState {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "health_tests.rs"]
+mod tests;
 
-    /// #5354 — a classified local-runtime failure flips the recall flag with
-    /// its own cause, so the panel names the Ollama fix from the first failed
-    /// embed instead of waiting out the retry budget.
-    #[test]
-    fn local_model_unavailable_marks_recall_degraded_with_its_cause() {
-        let _g = test_guard();
-
-        mark_local_model_unavailable_if_applicable(&PipelineFailure::new(
-            FailureCode::LocalModelUnavailable,
-        ));
-
-        let s = current_degraded_state();
-        assert!(s.semantic_recall, "recall must be flagged degraded");
-        assert_eq!(
-            s.cause.as_ref().map(|c| c.code),
-            Some(FailureCode::LocalModelUnavailable)
-        );
-        assert_eq!(
-            s.cause.as_ref().map(|c| c.remediation_key.as_str()),
-            Some("memory.health.remediation.local_model_unavailable")
-        );
-    }
-
-    /// #5398 (codex) — the classifier is the ONLY producer of the durable
-    /// UserErrorCenter entry when Ollama is running but the model was never
-    /// pulled: the factory health gate probes `GET /api/tags`, which succeeds
-    /// in that case, so it never fires. It must broadcast on the transition
-    /// into the state, and must not re-broadcast per failed row afterwards.
-    #[test]
-    fn local_model_unavailable_broadcasts_once_per_transition() {
-        let _g = test_guard();
-        let sink = crate::events::RecordingSink::install();
-
-        let failure = PipelineFailure::new(FailureCode::LocalModelUnavailable);
-
-        // First failure of the outage → clients are told.
-        mark_local_model_unavailable_if_applicable(&failure);
-        let recorded = sink.drain();
-        assert_eq!(recorded.len(), 1, "transition must broadcast");
-        let event = &recorded[0];
-        assert!(
-            matches!(
-                event,
-                crate::events::MemoryEvent::LocalModelUnavailable { .. }
-            ),
-            "the transition must publish the local-model-unavailable event, got {event:?}"
-        );
-
-        // Subsequent failures in the same outage must stay quiet — the re-embed
-        // path calls this per row.
-        mark_local_model_unavailable_if_applicable(&failure);
-        mark_local_model_unavailable_if_applicable(&failure);
-        assert!(
-            sink.drain().is_empty(),
-            "must not re-broadcast while already degraded for this cause"
-        );
-
-        // A successful embed clears the flag; the next outage is a new
-        // transition and must tell the clients again.
-        clear_semantic_recall_degraded();
-        mark_local_model_unavailable_if_applicable(&failure);
-        assert!(
-            !sink.drain().is_empty(),
-            "a fresh outage after recovery must broadcast again"
-        );
-    }
-
-    /// #5398 (CodeRabbit) — concurrent embed tasks must not all decide they are
-    /// the first to announce. The claim is a `compare_exchange`, so exactly one
-    /// of N racing callers publishes. Deterministic: the assertion is on the
-    /// count of claims, which the atomic makes exact regardless of scheduling.
-    #[test]
-    fn concurrent_failures_announce_exactly_once() {
-        let _g = test_guard();
-        let sink = crate::events::RecordingSink::install();
-
-        const THREADS: usize = 8;
-        std::thread::scope(|scope| {
-            for _ in 0..THREADS {
-                scope.spawn(|| {
-                    mark_local_model_unavailable_if_applicable(&PipelineFailure::new(
-                        FailureCode::LocalModelUnavailable,
-                    ));
-                });
-            }
-        });
-
-        let published = sink.drain().len();
-        assert_eq!(
-            published, 1,
-            "{THREADS} concurrent failures must yield exactly one announcement"
-        );
-    }
-
-    /// #5398 (CodeRabbit) — `publish_web_channel_event` is an unbuffered
-    /// broadcast: an announcement made before any client subscribed is dropped
-    /// with no replay. Bounded re-emission is what covers that, so a client
-    /// connecting mid-outage must still be told on the next failing operation.
-    #[test]
-    fn announcement_reaches_a_client_that_connects_mid_outage() {
-        let _g = test_guard();
-        let failure = PipelineFailure::new(FailureCode::LocalModelUnavailable);
-
-        // Outage starts with nobody listening — this send goes nowhere.
-        mark_local_model_unavailable_if_applicable(&failure);
-
-        // The client connects now, after the first failure.
-        let sink = crate::events::RecordingSink::install();
-        assert!(
-            sink.drain().is_empty(),
-            "the pre-subscription announcement is genuinely gone, not buffered"
-        );
-
-        // Next seal / re-embed operation builds its write embedder, which
-        // clears the degraded state, then fails again against the same dead
-        // runtime. The late subscriber must receive that one.
-        clear_semantic_recall_degraded();
-        mark_local_model_unavailable_if_applicable(&failure);
-
-        let recorded = sink.drain();
-        assert_eq!(
-            recorded.len(),
-            1,
-            "a client connecting mid-outage must still be told"
-        );
-        assert!(matches!(
-            recorded[0],
-            crate::events::MemoryEvent::LocalModelUnavailable { .. }
-        ));
-    }
-
-    /// A different active cause must not be mistaken for "already surfaced" —
-    /// recall degraded for an unrelated reason still needs the local-runtime
-    /// entry when Ollama then goes away.
-    #[test]
-    fn local_model_unavailable_broadcasts_over_a_different_active_cause() {
-        let _g = test_guard();
-        let sink = crate::events::RecordingSink::install();
-
-        mark_semantic_recall_degraded(FailureCode::EmbeddingsUnconfigured);
-        mark_local_model_unavailable_if_applicable(&PipelineFailure::new(
-            FailureCode::LocalModelUnavailable,
-        ));
-
-        assert!(
-            !sink.drain().is_empty(),
-            "a cause change into local_model_unavailable is a transition"
-        );
-    }
-
-    /// The helper must stay a no-op for every other cause — a cloud budget or
-    /// transport failure has nothing to do with the local runtime, and marking
-    /// recall degraded there would show the wrong remediation.
-    #[test]
-    fn other_failure_codes_do_not_mark_recall_degraded() {
-        let _g = test_guard();
-
-        for code in [
-            FailureCode::Transient,
-            FailureCode::BudgetExhausted,
-            FailureCode::AuthMissing,
-        ] {
-            mark_local_model_unavailable_if_applicable(&PipelineFailure::new(code));
-            assert!(
-                !current_degraded_state().semantic_recall,
-                "{} must not flip the recall flag",
-                code.as_str()
-            );
-        }
-    }
-
-    /// Regression (CodeRabbit): per-flag causes. Mark recall, then structure,
-    /// then clear structure — recall must still report its OWN cause, not the
-    /// (now-cleared) structure cause. With the old single shared slot this
-    /// surfaced the wrong remediation.
-    #[test]
-    fn degraded_cause_is_per_flag_not_shared() {
-        let _g = test_guard(); // resets both flags + causes
-
-        // Recall degraded for embeddings reason; structure degraded for extraction.
-        mark_semantic_recall_degraded(FailureCode::EmbeddingsUnconfigured);
-        mark_structure_degraded(FailureCode::ExtractionTimeout);
-
-        // Structure takes precedence while both are active.
-        let s = current_degraded_state();
-        assert!(s.semantic_recall && s.structure);
-        assert_eq!(
-            s.cause.as_ref().map(|c| c.code),
-            Some(FailureCode::ExtractionTimeout)
-        );
-
-        // Clear structure — recall stays, and its cause must be the RECALL one,
-        // not the cleared structure cause.
-        clear_structure_degraded();
-        let s = current_degraded_state();
-        assert!(s.semantic_recall && !s.structure);
-        assert_eq!(
-            s.cause.as_ref().map(|c| c.code),
-            Some(FailureCode::EmbeddingsUnconfigured),
-            "recall must keep its own cause after structure clears"
-        );
-
-        // Clear recall too — fully healthy, no cause.
-        clear_semantic_recall_degraded();
-        let s = current_degraded_state();
-        assert!(!s.is_degraded());
-        assert!(s.cause.is_none());
-    }
-
-    /// `StorageUnavailable` is the foundational host-FS failure: unrecoverable,
-    /// with its own remediation key.
-    #[test]
-    fn storage_unavailable_is_unrecoverable_with_key() {
-        let f = PipelineFailure::new(FailureCode::StorageUnavailable);
-        assert_eq!(f.class, FailureClass::Unrecoverable);
-        assert!(f.is_unrecoverable());
-        assert_eq!(
-            f.remediation_key,
-            "memory.health.remediation.storage_unavailable"
-        );
-        // discriminant round-trips through the per-flag u8 mapping.
-        assert_eq!(
-            u8_to_code(code_to_u8(FailureCode::StorageUnavailable)),
-            Some(FailureCode::StorageUnavailable)
-        );
-    }
-
-    /// Storage degradation outranks both structure and recall in
-    /// `current_degraded_state` — the host can't open the DB, so the disk fix
-    /// is the one actionable thing to surface. Clearing storage falls back to
-    /// the next-most-severe active cause (structure), each keeping its own.
-    #[test]
-    fn storage_degradation_outranks_structure_and_recall() {
-        let _g = test_guard(); // resets all flags + causes
-
-        mark_semantic_recall_degraded(FailureCode::EmbeddingsUnconfigured);
-        mark_structure_degraded(FailureCode::ExtractionTimeout);
-        mark_storage_degraded(FailureCode::StorageUnavailable);
-
-        // All three active → storage wins.
-        let s = current_degraded_state();
-        assert!(s.storage && s.structure && s.semantic_recall);
-        assert!(s.is_degraded());
-        assert_eq!(
-            s.cause.as_ref().map(|c| c.code),
-            Some(FailureCode::StorageUnavailable)
-        );
-
-        // Clear storage → structure becomes the surfaced cause (its OWN, not
-        // storage's stale one).
-        clear_storage_degraded();
-        let s = current_degraded_state();
-        assert!(!s.storage && s.structure);
-        assert_eq!(
-            s.cause.as_ref().map(|c| c.code),
-            Some(FailureCode::ExtractionTimeout)
-        );
-    }
-}
+#[path = "health_test_support.rs"]
+mod test_support;

@@ -302,7 +302,7 @@ impl ComposioProvider for NotionProvider {
 /// best-effort against common property names (`Status`, `Assignee`,
 /// `Due`). Anything unmatched is simply left `None` — the raw payload is
 /// preserved for enrichment.
-fn normalize_notion_page(page: &serde_json::Value) -> Option<NormalizedTask> {
+pub(super) fn normalize_notion_page(page: &serde_json::Value) -> Option<NormalizedTask> {
     let external_id = pick_str(page, PAGE_ID_PATHS)?;
     let title = normalization::extract_page_title(page)
         .unwrap_or_else(|| format!("Notion page {external_id}"));

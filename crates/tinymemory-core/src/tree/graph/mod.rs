@@ -17,3 +17,7 @@ pub use bfs::{pair_distances, PairDistance};
 pub use store::{
     clear_edges_for_entities_tx, neighbors, pairs_from_entities, upsert_edges, upsert_edges_tx,
 };
+
+#[cfg(test)]
+#[path = "graph_tests.rs"]
+mod tests;

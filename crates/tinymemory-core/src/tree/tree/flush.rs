@@ -32,3 +32,7 @@ pub async fn force_flush_tree(
         .ok_or_else(|| anyhow::anyhow!("no tree with id {tree_id}"))?;
     cascade_all_from(config, &tree, 0, now.or_else(|| Some(Utc::now())), strategy).await
 }
+
+#[cfg(test)]
+#[path = "flush_tests.rs"]
+mod tests;

@@ -201,7 +201,7 @@ impl ComposioProvider for LinearProvider {
 }
 
 /// Map a raw Linear issue payload into a [`NormalizedTask`].
-fn normalize_linear_issue(issue: &serde_json::Value) -> Option<NormalizedTask> {
+pub(super) fn normalize_linear_issue(issue: &serde_json::Value) -> Option<NormalizedTask> {
     let external_id = pick_str(issue, ISSUE_ID_PATHS)?;
     let title = normalization::extract_issue_title(issue)
         .unwrap_or_else(|| format!("Linear issue {external_id}"));
@@ -224,7 +224,7 @@ fn normalize_linear_issue(issue: &serde_json::Value) -> Option<NormalizedTask> {
 }
 
 /// Extract label names from a Linear issue (`labels.nodes[].name`).
-fn extract_linear_labels(issue: &serde_json::Value) -> Vec<String> {
+pub(super) fn extract_linear_labels(issue: &serde_json::Value) -> Vec<String> {
     let arr = issue
         .get("labels")
         .or_else(|| issue.get("data").and_then(|d| d.get("labels")))

@@ -79,3 +79,7 @@ pub enum EvidenceRef {
         window_label: String,
     },
 }
+
+#[cfg(test)]
+#[path = "evidence_tests.rs"]
+mod tests;

@@ -2043,7 +2043,9 @@ name = "tinymemory-testing-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
+ "http-body-util",
  "serde",
  "serde_json",
  "tinymemory",
@@ -2052,7 +2054,9 @@ dependencies = [
  "tinymemory-remote",
  "tinymemory-tinycortex",
  "tokio",
+ "tower",
  "tower-http",
+ "url",
 ]
 
 [[package]]
