@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use reqwest::Method;
 use serde_json::{json, Value};
+use tinymemory_api::error::MemoryError;
 use tinymemory_api::recall::RecallOpts;
 use tinymemory_api::traits::Memory;
 use tinymemory_api::types::MemoryTaint;
@@ -178,6 +179,40 @@ impl Memory for SupermemoryMemory {
 /// Supermemory-specific REST operations and wire-format conversion.
 struct SupermemoryDialect {
     client: HttpClient,
+}
+
+/// The characters Supermemory removes from stored content (issue #80).
+///
+/// Measured against the live API rather than inferred from documentation:
+/// `POST /v4/memories` echoes the stored value back in its own 201, and for
+/// these two the echo is shorter than what was sent. Everything else offered
+/// to it survives unchanged — every other C0 control, DEL, NEL, ZWSP, BOM and
+/// U+2028 — so the refusal below stays as narrow as the defect.
+///
+/// Only `content` is affected. Identity rides in `metadata`, which the service
+/// does not sanitise: `tinymemory_key` and `tinymemory_namespace` round-trip
+/// both characters intact, so a key is never quietly rewritten into another
+/// key's. That is why [`Dialect::upsert`] inspects the content alone.
+const CONTENT_CHARACTERS_SUPERMEMORY_DROPS: [char; 2] = ['\u{0}', '\u{FFFD}'];
+
+/// Returns the first character Supermemory would drop, and where it sits.
+fn dropped_content_character(content: &str) -> Option<(usize, char)> {
+    content
+        .char_indices()
+        .find(|(_, character)| CONTENT_CHARACTERS_SUPERMEMORY_DROPS.contains(character))
+}
+
+/// Names a character without reproducing it.
+///
+/// The name goes into an error message, and a raw NUL travels from there into
+/// logs, terminals, and shells that render it as nothing — turning a precise
+/// refusal into a message that appears to name no character at all.
+fn character_name(character: char) -> String {
+    match character {
+        '\u{0}' => "U+0000 (NUL)".to_string(),
+        '\u{FFFD}' => "U+FFFD (the replacement character)".to_string(),
+        other => format!("U+{:04X}", other as u32),
+    }
 }
 
 impl SupermemoryDialect {
@@ -357,7 +392,36 @@ impl Dialect for SupermemoryDialect {
     }
 
     /// Replaces an existing exact record or creates a direct v4 memory.
+    ///
+    /// Refuses content Supermemory would alter. `MemoryCore::store` promises
+    /// that what is read back equals what was stored, and this service strips
+    /// [`CONTENT_CHARACTERS_SUPERMEMORY_DROPS`] server-side; storing anyway
+    /// would break that promise silently, which is the one outcome the
+    /// contract rules out — a driver may refuse a shape, but not accept one
+    /// and hand back something else. The check precedes the request because
+    /// the service answers `201` and alters the value in the same breath, so
+    /// there is no later point at which the adapter could still object.
+    ///
+    /// # Errors
+    ///
+    /// [`MemoryError::Invalid`] — the refusal class for caller input a driver
+    /// rejects — carried as the anyhow payload every other typed error here
+    /// uses, so a caller can match on it after the usual downcast.
     async fn upsert(&self, entry: StoredEntry) -> anyhow::Result<()> {
+        if let Some((at, character)) = dropped_content_character(&entry.content) {
+            return Err(anyhow::Error::new(MemoryError::Invalid(format!(
+                // Debug-escaped, not raw: metadata is not sanitised, so an
+                // identity may itself hold a NUL — and a refusal that emits
+                // one lands in the same logs and terminals that render it as
+                // nothing, which is the failure this message exists to avoid.
+                "supermemory removes {} from stored content, so {:?}/{:?} would read back \
+                 changed (first occurrence at byte {at}); remove the character, or store \
+                 this record through a driver that preserves it",
+                character_name(character),
+                entry.namespace,
+                entry.key
+            ))));
+        }
         let existing = self.find_entry(&entry.namespace, &entry.key).await?;
         let metadata = Self::metadata(&entry);
         if let Some(existing) = existing {

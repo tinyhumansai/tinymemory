@@ -281,6 +281,29 @@ All three advertise the mandatory Core, Recall, and Portability families. The
 live Docker harness and conformance command are documented in
 [`integration/remote-engines/`](integration/remote-engines/README.md).
 
+One of them restricts what it will store. Supermemory removes `U+0000` and
+`U+FFFD` from content server-side, so the adapter refuses such content with
+`MemoryError::Invalid` rather than storing a value the service would quietly
+rewrite: `MemoryCore::store` promises that what is read back equals what was
+stored, and a driver may refuse a shape but may not accept one and hand back
+another. The restriction is no wider than the defect — every other C0 control,
+plus DEL, NEL, ZWSP, BOM and U+2028, survives — and identity is untouched,
+because keys and namespaces travel in metadata, which the service does not
+sanitise. Callers that might hold either character should strip or replace it
+first; `U+FFFD` in particular arrives in any text that has been through a lossy
+decode (issue #80).
+
+Behaviour like that is visible only against the real service, so
+`tinymemory-remote` carries a live target that runs the full contract suite
+against a hosted endpoint when credentials are present and skips when they are
+not. Point it at a scratch account: the suite writes and deletes records.
+
+```bash
+TINYMEMORY_TEST_SUPERMEMORY_URL=https://api.supermemory.ai \
+TINYMEMORY_TEST_SUPERMEMORY_KEY=sm_... \
+  cargo test -p tinymemory-remote --test live_remote_engines
+```
+
 ## Development
 
 ```bash
