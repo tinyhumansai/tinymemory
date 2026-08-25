@@ -55,7 +55,6 @@ fn runtime_config() -> EngineRuntimeConfig {
     EngineRuntimeConfig {
         workspace_dir: "/workspace".into(),
         config_path: "/workspace/config.toml".into(),
-        backend_api_url: String::new(),
         memory: Default::default(),
         memory_tree: Default::default(),
         scheduler_gate: Default::default(),
@@ -254,7 +253,6 @@ fn the_sync_cadence_is_answered_from_the_host_and_not_from_a_constant() {
 fn an_unstated_composio_mode_is_not_direct() {
     let config = EngineRuntimeConfig {
         composio_mode: String::new(),
-        backend_api_url: String::new(),
         composio_entity_id: String::new(),
         ..runtime_config()
     };

@@ -118,10 +118,6 @@ pub struct EngineRuntimeConfig {
     /// answer backend mode gets, which is what an unset Composio integration
     /// should look like.
     pub composio_mode: String,
-    /// Base URL of the host's backend, for proxied Composio. Empty when the
-    /// host named none — see `effective_backend_api_url` below for why that is
-    /// a refusal rather than a default.
-    pub backend_api_url: String,
     /// The Composio entity the host authenticates as.
     ///
     /// An identifier, not a credential: it selects whose connected accounts a
@@ -204,15 +200,8 @@ impl MemoryHostConfig for EngineRuntimeConfig {
     fn api_url(&self) -> Option<&str> {
         None
     }
-    /// The host's backend base URL, verbatim.
-    ///
-    /// No default is substituted for an empty one. Guessing a URL here would
-    /// send a user's memory at whichever backend this crate happened to hard-code
-    /// — including, for a self-hosted operator, one they do not control. An
-    /// empty string fails inside the HTTP client instead, which is a bad error
-    /// message and the right outcome.
     fn effective_backend_api_url(&self) -> String {
-        self.backend_api_url.clone()
+        String::new()
     }
     /// Always the named refusal, never `Ok(None)`.
     ///

@@ -118,7 +118,6 @@ fn provider_config(
         // sends.
         memory_sync_interval_secs: None,
         composio_mode: String::new(),
-        backend_api_url: String::new(),
         composio_entity_id: String::new(),
     }
 }

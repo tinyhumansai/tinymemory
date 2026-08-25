@@ -164,22 +164,6 @@ pub struct ModuleConfig {
     /// a no-sync nobody can, this picks the one that can be noticed.
     pub memory_sync_interval_secs: Option<u64>,
 
-    /// Base URL of the OpenHuman backend, for proxied ("backend") Composio.
-    ///
-    /// A field rather than a seam member, unlike the session bearer beside it,
-    /// and the difference is what each thing is. A bearer is a credential that
-    /// expires and gets refreshed, so a snapshot of it goes stale and has to be
-    /// asked for per call. A base URL is routing configuration: it changes when
-    /// an operator points the host at a different backend, which is a restart,
-    /// not a mid-session event.
-    ///
-    /// Empty means the host named none. The proxied branch of `composio_config`
-    /// then builds its request against an empty base and fails inside the HTTP
-    /// client with a builder error that names no cause — so a host that intends
-    /// proxied mode must send this.
-    #[serde(default)]
-    pub backend_api_url: String,
-
     /// How the host routes Composio calls: `backend` or `direct`.
     ///
     /// Empty means the host stated no mode — an older host, or one with no
@@ -220,7 +204,6 @@ impl Default for ModuleConfig {
             local_ai: LocalAiConfig::default(),
             embeddings_provider: None,
             memory_provider: None,
-            backend_api_url: String::new(),
             default_model: None,
             default_temperature: 0.0,
             output_language: None,

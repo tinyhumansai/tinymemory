@@ -33,7 +33,6 @@ impl From<&ModuleConfig> for EngineRuntimeConfig {
             // mode, and both of those skip work rather than fail it.
             memory_sync_interval_secs: config.memory_sync_interval_secs,
             composio_mode: config.composio_mode.clone(),
-            backend_api_url: config.backend_api_url.clone(),
             composio_entity_id: config.composio_entity_id.clone(),
         }
     }
