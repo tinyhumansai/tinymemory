@@ -64,6 +64,12 @@ fn builtin_cloud_provider_defaults_cover_phase_one_presets() {
             "https://api-inference.modelscope.cn/v1",
             AuthStyle::Bearer,
         ),
+        (
+            "inworld",
+            "Inworld",
+            "https://api.inworld.ai/v1",
+            AuthStyle::Basic,
+        ),
     ] {
         let mut entry = CloudProviderCreds {
             id: format!("p_{slug}"),
@@ -93,7 +99,7 @@ fn builtin_cloud_provider_slugs_are_unique() {
 
 #[test]
 fn is_builtin_cloud_slug_matches_presets_only() {
-    for slug in ["openai", "deepseek", "groq", "mistral"] {
+    for slug in ["openai", "deepseek", "groq", "mistral", "inworld"] {
         assert!(is_builtin_cloud_slug(slug), "{slug} is a built-in preset");
     }
     for slug in ["my-proxy", "custom-openai", "totally-unknown", ""] {
@@ -167,6 +173,7 @@ fn host_is_builtin_cloud_provider_recognises_inference_hosts() {
         "api.openai.com",
         "api.anthropic.com",
         "api.groq.com",
+        "api.inworld.ai",
         "generativelanguage.googleapis.com",
         "API.OPENAI.COM", // case-insensitive
     ] {
@@ -211,6 +218,7 @@ fn nvidia_host_is_chat_completions_only_regardless_of_slug() {
         "https://api.deepseek.com/v1",
         "https://api.groq.com/openai/v1",
         "https://api.mistral.ai/v1",
+        "https://api.inworld.ai/v1",
     ] {
         assert!(
             endpoint_host_is_chat_completions_only(endpoint),
@@ -248,8 +256,8 @@ fn host_gate_agrees_with_slug_capability_for_every_builtin() {
     for provider in BUILTIN_CLOUD_PROVIDERS {
         // OpenhumanJwt / Anthropic presets never route through the
         // OpenAI-compatible Responses fallback; the gate only matters for
-        // the Bearer OpenAI-compatible hosts.
-        if provider.auth_style != AuthStyle::Bearer {
+        // Bearer and Basic OpenAI-compatible hosts.
+        if !matches!(provider.auth_style, AuthStyle::Bearer | AuthStyle::Basic) {
             continue;
         }
         let host_chat_only = endpoint_host_is_chat_completions_only(provider.endpoint);
@@ -265,13 +273,22 @@ fn host_gate_agrees_with_slug_capability_for_every_builtin() {
 #[test]
 fn auth_styles_and_legacy_provider_types_expose_stable_wire_properties() {
     let styles = [
-        (AuthStyle::Bearer, "bearer"),
-        (AuthStyle::Anthropic, "anthropic"),
-        (AuthStyle::OpenhumanJwt, "openhuman_jwt"),
-        (AuthStyle::None, "none"),
+        (AuthStyle::Bearer, "bearer", "bearer"),
+        (AuthStyle::Basic, "basic", "basic"),
+        (AuthStyle::Anthropic, "anthropic", "anthropic"),
+        // Preserve the historical serde value while `as_str` retains the
+        // underscore used by host configuration code.
+        (AuthStyle::OpenhumanJwt, "openhuman_jwt", "openhumanjwt"),
+        (AuthStyle::None, "none", "none"),
     ];
-    for (style, expected) in styles {
+    for (style, expected, wire_value) in styles {
         assert_eq!(style.as_str(), expected);
+        let json = serde_json::to_string(&style).expect("auth style serializes");
+        assert_eq!(json, format!("\"{wire_value}\""));
+        assert_eq!(
+            serde_json::from_str::<AuthStyle>(&json).expect("auth style deserializes"),
+            style
+        );
     }
 
     let types = [

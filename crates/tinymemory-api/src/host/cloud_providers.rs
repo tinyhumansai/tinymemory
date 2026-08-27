@@ -46,6 +46,12 @@ pub const BUILTIN_CLOUD_PROVIDERS: &[BuiltinCloudProvider] = &[
         auth_style: AuthStyle::Bearer,
     },
     BuiltinCloudProvider {
+        slug: "inworld",
+        label: "Inworld",
+        endpoint: "https://api.inworld.ai/v1",
+        auth_style: AuthStyle::Basic,
+    },
+    BuiltinCloudProvider {
         slug: "orcarouter",
         label: "OrcaRouter",
         endpoint: "https://api.orcarouter.ai/v1",
@@ -326,6 +332,8 @@ pub enum AuthStyle {
     /// OpenAI-compatible: `Authorization: Bearer <key>`
     #[default]
     Bearer,
+    /// HTTP Basic: `Authorization: Basic <credential>`
+    Basic,
     /// Anthropic: `x-api-key: <key>` + `anthropic-version: 2023-06-01`
     Anthropic,
     /// OpenHuman session JWT (injected by the backend provider, not stored here).
@@ -338,6 +346,7 @@ impl AuthStyle {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Bearer => "bearer",
+            Self::Basic => "basic",
             Self::Anthropic => "anthropic",
             Self::OpenhumanJwt => "openhuman_jwt",
             Self::None => "none",
