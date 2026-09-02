@@ -52,7 +52,7 @@ use super::scopes::{
     classify_unknown, find_curated, toolkit_from_slug, CuratedTool, ToolScope, UserScopePref,
 };
 
-pub use descriptions::toolkit_description;
+pub use descriptions::{toolkit_description, toolkit_result_notes};
 
 /// Every toolkit the capability surface reports on, in display order.
 pub const CAPABILITY_TOOLKITS: &[&str] = &[
