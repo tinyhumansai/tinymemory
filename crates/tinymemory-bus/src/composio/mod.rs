@@ -76,5 +76,6 @@ pub use tasks::{GithubFetchMode, NormalizedTask, TaskContainer, TaskFetchFilter,
 pub use catalogs::{
     catalog_for_toolkit, curated_scope_for, has_native_provider, is_action_visible_with_pref,
     native_provider_sync_interval_secs, parse_sync_interval_override, sync_interval_env_var,
-    toolkit_description, toolkit_has_scope, CAPABILITY_TOOLKITS, NATIVE_PROVIDERS,
+    toolkit_description, toolkit_has_scope, toolkit_result_notes, CAPABILITY_TOOLKITS,
+    NATIVE_PROVIDERS,
 };
