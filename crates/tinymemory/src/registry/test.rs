@@ -181,6 +181,7 @@ fn supported_external_ids_have_a_fixed_class() {
         SUPERMEMORY_DRIVER_ID,
         MEM0_DRIVER_ID,
         COGNEE_DRIVER_ID,
+        CORTEX_DRIVER_ID,
         AGENTMEMORY_DRIVER_ID,
     ] {
         let admitted = registry

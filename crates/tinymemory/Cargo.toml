@@ -92,6 +92,7 @@ tinycortex = ["dep:tinymemory-tinycortex"]
 supermemory = ["dep:tinymemory-remote"]
 mem0 = ["dep:tinymemory-remote"]
 cognee = ["dep:tinymemory-remote"]
+cortex = ["dep:tinymemory-remote"]
 agentmemory = ["dep:tinymemory-remote"]
 # LivingBrain exposes a brain-scoped remote API client, not an exact-record
 # `MemoryProvider`; see docs/specs/livingbrain-remote-api.md.
@@ -99,7 +100,7 @@ livingbrain = ["dep:tinymemory-remote"]
 # Every engine at once. A host that binds its driver from configuration rather
 # than at compile time wants this: `DriverRegistry` admission is a static policy
 # table, so which adapters are compiled in decides what it can actually bind.
-engines = ["tinycortex", "supermemory", "mem0", "cognee", "agentmemory"]
+engines = ["tinycortex", "supermemory", "mem0", "cognee", "cortex", "agentmemory"]
 
 # --- Subsystems ------------------------------------------------------------
 # The workspace crates that are not adapters, each re-exported as a module of

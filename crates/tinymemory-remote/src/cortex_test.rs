@@ -11,6 +11,15 @@
 #![allow(clippy::expect_used)]
 
 use super::*;
+
+#[test]
+fn credentials_require_https_except_on_loopback() {
+    assert!(CortexMemory::api("http://memory.example.com", "test-key").is_err());
+    assert!(CortexMemory::api("https://memory.example.com", "test-key").is_ok());
+    assert!(CortexMemory::api("http://127.0.0.1:3141", "test-key").is_ok());
+    assert!(CortexMemory::api("http://[::1]:3141", "test-key").is_ok());
+    assert!(CortexMemory::api("http://localhost:3141", "test-key").is_ok());
+}
 #[test]
 fn a_namespace_maps_to_a_scope_and_back() {
     let namespace = "oc/acme-0123456789abcdef0123456789abcdef/facts";

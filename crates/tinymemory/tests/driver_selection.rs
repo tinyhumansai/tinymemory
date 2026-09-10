@@ -27,8 +27,8 @@
 
 use tinymemory::api::host::test_support::TestHostConfig;
 use tinymemory::registry::{
-    ConfigLabels, DriverClass, DriverEntry, DriverRegistry, COGNEE_DRIVER_ID, MEM0_DRIVER_ID,
-    SUPERMEMORY_DRIVER_ID, TINYCORTEX_DRIVER_ID, TRUSTED,
+    ConfigLabels, DriverClass, DriverEntry, DriverRegistry, COGNEE_DRIVER_ID, CORTEX_DRIVER_ID,
+    MEM0_DRIVER_ID, SUPERMEMORY_DRIVER_ID, TINYCORTEX_DRIVER_ID, TRUSTED,
 };
 
 fn labels() -> ConfigLabels<'static> {
@@ -68,7 +68,12 @@ fn the_null_driver_is_admitted_and_is_class_null() {
 #[test]
 fn every_reserved_external_id_resolves_to_the_external_class() {
     let registry = DriverRegistry::builtin();
-    for id in [SUPERMEMORY_DRIVER_ID, MEM0_DRIVER_ID, COGNEE_DRIVER_ID] {
+    for id in [
+        SUPERMEMORY_DRIVER_ID,
+        MEM0_DRIVER_ID,
+        COGNEE_DRIVER_ID,
+        CORTEX_DRIVER_ID,
+    ] {
         let admission = registry
             .admit(id, Some(trusted_external()), labels())
             .unwrap_or_else(|reason| panic!("{id} was refused: {}", reason.reason));

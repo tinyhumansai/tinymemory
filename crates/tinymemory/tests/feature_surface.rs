@@ -25,6 +25,7 @@ compile_error!("contacts must imply core");
         feature = "supermemory",
         feature = "mem0",
         feature = "cognee",
+        feature = "cortex",
         feature = "agentmemory"
     ))
 ))]

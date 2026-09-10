@@ -132,8 +132,60 @@ services:
       mock-inference:
         condition: service_healthy
 
+  cortex:
+    profiles: [cortex]
+    image: cortexdb/cortexdb:v0.9.9
+    command: ["3141", "/data"]
+    environment:
+      CORTEX_API_KEY: ${TINYMEMORY_TEST_CORTEX_KEY:-tinymemory-cortex-test}
+      CORTEX_DEPLOYMENT_PRESET: dev_local
+      CORTEX_EMBEDDING_URL: ${CORTEX_INFERENCE_URL:-http://mock-inference:8080/v1}
+      CORTEX_EMBEDDING_API_KEY: ${CORTEX_INFERENCE_KEY:-tinymemory-test}
+      OPENAI_API_KEY: ${CORTEX_INFERENCE_KEY:-tinymemory-test}
+      CORTEX_EMBEDDING_MODEL: ${CORTEX_EMBEDDING_MODEL:-vectors}
+      CORTEX_EMBEDDING_DIMS: "3072"
+      CORTEX_LLM_URL: ${CORTEX_INFERENCE_URL:-http://mock-inference:8080/v1}
+      CORTEX_ENTITY_API_KEY: ${CORTEX_INFERENCE_KEY:-tinymemory-test}
+      CORTEX_LLM_MODEL: ${CORTEX_EXTRACTION_MODEL:-flash}
+      CORTEX_ENRICHMENT_URL: ${CORTEX_INFERENCE_URL:-http://mock-inference:8080/v1}
+      CORTEX_ENRICHMENT_API_KEY: ${CORTEX_INFERENCE_KEY:-tinymemory-test}
+      CORTEX_ENRICHMENT_MODEL: ${CORTEX_ENRICHMENT_MODEL:-reasoning}
+      CORTEX_ENRICHMENT_DELAY_SECONDS: "0"
+      CORTEX_ANSWER_PROVIDER: openai
+      CORTEX_ANSWER_URL: ${CORTEX_INFERENCE_URL:-http://mock-inference:8080/v1}
+      CORTEX_ANSWER_API_KEY: ${CORTEX_INFERENCE_KEY:-tinymemory-test}
+      CORTEX_ANSWER_MODEL: ${CORTEX_ANSWER_MODEL:-reasoning}
+      CORTEX_VERIFIER_URL: ${CORTEX_INFERENCE_URL:-http://mock-inference:8080/v1}
+      CORTEX_VERIFIER_API_KEY: ${CORTEX_INFERENCE_KEY:-tinymemory-test}
+      CORTEX_VERIFIER_MODEL: ${CORTEX_VERIFIER_MODEL:-max-reasoning}
+      CORTEX_VERIFIER_MAX_TOKENS: "16384"
+      CORTEX_ENTITY_GRAPH: "1"
+      CORTEX_V1_LAYERS_AUTO: "1"
+      CORTEX_AUTO_ROUTE: "1"
+      CORTEX_ENTITY_VECTOR_SEED_ENABLE: "1"
+      CORTEX_FACT_EVENT_PROMOTION_ENABLE: "1"
+      CORTEX_FACT_VALIDITY_FILTER: "1"
+      CORTEX_HYDE_PASSAGES_MS: "3"
+      CORTEX_HYDE_MULTIQUERY_DISABLED_TYPES: ""
+      CORTEX_MULTIHOP_QUERY_COUNT: "6"
+      CORTEX_MULTIHOP_MAX_QUERY_FANOUT: "8"
+      CORTEX_MULTIHOP_QUERY_PLANNER_TYPES: single-session-user,single-session-assistant,multi-session,open-domain
+      CORTEX_GRAPH_RETRIEVAL_TOP_K: "80"
+      CORTEX_SALIENCE_WEIGHT: "0.15"
+      CORTEX_METHYLATION_INACTIVITY_HOURS: "720"
+      CORTEX_CONSOLIDATION_MIN_AGE_HOURS: "0"
+    ports: ["127.0.0.1:3141:3141"]
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - cortex-data:/data
+      - ./cortex.toml:/data/cortex.toml:ro
+    depends_on:
+      mock-inference:
+        condition: service_healthy
+
   mock-inference:
-    profiles: [mem0, cognee]
+    profiles: [mem0, cognee, cortex]
     build:
       context: .
       dockerfile: mock-inference.Dockerfile
@@ -148,3 +200,4 @@ volumes:
   mem0-postgres:
   cognee-data:
   agentmemory-data:
+  cortex-data:

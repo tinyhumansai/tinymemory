@@ -732,13 +732,18 @@ pub(crate) trait Dialect: Send + Sync + std::fmt::Debug {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 /// TinyMemory's exact-record contract composed over a native backend dialect.
 pub(crate) struct RemoteMemory<D> {
     dialect: D,
 }
 
 impl<D> RemoteMemory<D> {
+    /// Shared access for a composed provider that adds native capabilities.
+    pub(crate) fn dialect(&self) -> &D {
+        &self.dialect
+    }
+
     /// Mutable access for the adapters' builder-style configuration
     /// (`with_request_timeout` on each public type).
     pub(crate) fn dialect_mut(&mut self) -> &mut D {

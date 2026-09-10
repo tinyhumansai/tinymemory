@@ -141,7 +141,7 @@ pub trait MemoryHostConfig: Send + Sync + std::fmt::Debug {
     fn memory_provider(&self) -> Option<&str>;
 
     /// The memory **engine** this host selects, when its configuration names
-    /// one — `tinycortex`, `supermemory`, `mem0`, `cognee`, `null`.
+    /// one — `tinycortex`, `supermemory`, `mem0`, `cognee`, `cortex`, `null`.
     ///
     /// Deliberately distinct from [`Self::memory_provider`], which despite the
     /// name is a `provider:model` routing string for the memory *workload* —

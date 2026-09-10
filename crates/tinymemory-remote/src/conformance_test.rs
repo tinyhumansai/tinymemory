@@ -1,7 +1,7 @@
 //! The conformance suite, run against the hosted adapters.
 //!
 //! Issue #18's acceptance criterion 5: "the conformance suite passes for
-//! TinyCortex and all three remote adapters". Until now it ran against the
+//! TinyCortex and every remote adapter". Until now it ran against the
 //! in-memory reference driver and the null driver — both written alongside the
 //! suite, so passing proved the assertions were self-consistent and little
 //! else.
@@ -646,11 +646,18 @@ async fn cortex_experience(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
+    let modality = body
+        .get("modality")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let content = body.get("content").cloned().unwrap_or_default();
     log.events.push(json!({
         "id": id,
         "scope": scope,
+        "modality": modality,
         "wal_offset": offset,
-        "content": { "kind": "message", "role": "user", "text": payload },
+        "content": content,
         "context": { "recorded_at": "2026-09-02T00:00:00Z" },
     }));
     // The real id, not a placeholder: `/v1/experience` answers with the id the
@@ -658,7 +665,41 @@ async fn cortex_experience(
     // becoming readable before it reports the write as done.
     (
         axum::http::StatusCode::ACCEPTED,
-        Json(json!({ "event_id": id, "status": "captured" })),
+        Json(json!({
+            "event_id": id,
+            "status": "captured",
+            "replayed_from_idempotency": false
+        })),
+    )
+}
+
+async fn cortex_experience_bulk(
+    State(store): State<CortexStore>,
+    Json(body): Json<Value>,
+) -> (axum::http::StatusCode, Json<Value>) {
+    let items = body
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut results = Vec::with_capacity(items.len());
+    for (index, item) in items.into_iter().enumerate() {
+        let (status, Json(receipt)) = cortex_experience(State(store.clone()), Json(item)).await;
+        if !status.is_success() {
+            return (status, Json(receipt));
+        }
+        results.push(json!({
+            "index": index,
+            "event_id": receipt.get("event_id").cloned().unwrap_or_default(),
+            "replayed_from_idempotency": receipt
+                .get("replayed_from_idempotency")
+                .cloned()
+                .unwrap_or(json!(false)),
+        }));
+    }
+    (
+        axum::http::StatusCode::OK,
+        Json(json!({ "accepted": results.len(), "results": results })),
     )
 }
 
@@ -815,7 +856,34 @@ async fn cortex_recall(State(store): State<CortexStore>, Json(body): Json<Value>
             hit
         })
         .collect();
-    Json(json!({ "layers": { "events": hits } }))
+    Json(json!({ "pack_id": "pack_test", "layers": { "events": hits } }))
+}
+
+async fn cortex_answer(Json(body): Json<Value>) -> (axum::http::StatusCode, Json<Value>) {
+    if body.get("use_pack_id").and_then(Value::as_str) != Some("pack_test") {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(json!({ "error_code": "MISSING_PACK" })),
+        );
+    }
+    let query = body
+        .get("question")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    (
+        axum::http::StatusCode::OK,
+        Json(json!({
+            "answer": format!("grounded answer for {query}"),
+            "citations": [{
+                "id": "evt_answer_source",
+                "key": "answer-source",
+                "content": "grounding evidence",
+                "score": 0.9
+            }],
+            "context_block": "grounding evidence",
+            "diagnostics": { "answer_model": "reasoning" }
+        })),
+    )
 }
 
 /// The real engine caps this listing at fifty unless `limit` says otherwise,
@@ -850,9 +918,11 @@ async fn cortex_backend() -> String {
     let store: CortexStore = Arc::new(Mutex::new(CortexLog::default()));
     let app = Router::new()
         .route("/v1/experience", post(cortex_experience))
+        .route("/v1/experience/bulk", post(cortex_experience_bulk))
         .route("/v1/events", get(cortex_events))
         .route("/v1/forget", post(cortex_forget))
         .route("/v1/recall", post(cortex_recall))
+        .route("/v1/answer", post(cortex_answer))
         .route("/v1/scopes/list", get(cortex_scopes))
         .route(
             "/v1/admin/health",
@@ -926,6 +996,249 @@ async fn cortex_upholds_the_contract() {
     let endpoint = cortex_backend().await;
     let provider = cortex_provider(CortexMemory::api(&endpoint, "test-key").expect("client"));
     tinymemory_conformance::assert_provider(Arc::new(provider)).await;
+}
+
+fn cortex_ingest_item(
+    namespace: &str,
+    source_id: &str,
+    content: &str,
+    author: Option<&str>,
+) -> tinymemory_api::provider::IngestItem {
+    tinymemory_api::provider::IngestItem {
+        namespace: Some(namespace.to_string()),
+        source: tinymemory_api::chunks::DataSource::Conversation,
+        source_id: source_id.to_string(),
+        owner: "simulation-user".to_string(),
+        source_ref: None,
+        content: content.to_string(),
+        mime: Some("text/plain".to_string()),
+        timestamp: None,
+        tags: vec!["simulation".to_string()],
+        author: author.map(str::to_owned),
+        channel_label: None,
+        platform: Some("tinymemory-test".to_string()),
+        to: Vec::new(),
+        cc: Vec::new(),
+        subject: None,
+        list_unsubscribe: None,
+        taint: tinymemory_api::types::MemoryTaint::ExternalSync,
+        path_scope: None,
+    }
+}
+
+/// CortexDB exposes every product-facing ingestion shape and grounded answers.
+#[tokio::test]
+async fn cortex_full_provider_ingests_every_product_shape() {
+    use tinymemory_api::evidence::EvidenceRef;
+    use tinymemory_api::learning::{CueFamily, FacetClass, LearningCandidate};
+    use tinymemory_api::provider::{AnswerRequest, MemoryProvider, MemoryRecall, RawMemoryEvent};
+    use tinymemory_api::recall::OwnedRecallOpts;
+    use tinymemory_api::types::MemoryTaint;
+
+    let endpoint = cortex_backend().await;
+    let provider = cortex_provider(CortexMemory::api(&endpoint, "test-key").expect("client"));
+    tinymemory_api::provider::audit_provider(&provider).expect("capability audit");
+    for capability in [
+        Capability::DocumentIngest,
+        Capability::ConversationIngest,
+        Capability::LearningIngest,
+        Capability::EventIngest,
+        Capability::Answer,
+    ] {
+        assert!(provider.capabilities().contains(capability));
+        assert!(provider.provides(capability));
+    }
+
+    let document_namespace = "simulation/documents";
+    let document = provider
+        .as_document_ingest()
+        .expect("document ingest")
+        .ingest_document(cortex_ingest_item(
+            document_namespace,
+            "architecture",
+            "The launch architecture uses CortexDB.",
+            None,
+        ))
+        .await
+        .expect("document");
+    assert_eq!(document.written, 1);
+
+    let conversation_namespace = "simulation/conversation";
+    let conversation = provider
+        .as_conversation_ingest()
+        .expect("conversation ingest")
+        .ingest_conversation(vec![
+            cortex_ingest_item(
+                conversation_namespace,
+                "thread-1",
+                "Please remember the launch date.",
+                Some("user"),
+            ),
+            cortex_ingest_item(
+                conversation_namespace,
+                "thread-1",
+                "The launch date is Thursday.",
+                Some("assistant"),
+            ),
+        ])
+        .await
+        .expect("conversation");
+    assert_eq!(conversation.written, 2);
+
+    let learning = provider
+        .as_learning_ingest()
+        .expect("learning ingest")
+        .ingest_learning(LearningCandidate {
+            class: FacetClass::Tooling,
+            key: "package_manager".to_string(),
+            value: "pnpm".to_string(),
+            cue_family: CueFamily::Explicit,
+            evidence: EvidenceRef::ToolCall {
+                tool_name: "shell".to_string(),
+                episodic_id: 7,
+            },
+            initial_confidence: 0.95,
+            observed_at: 1_700_000_000.0,
+        })
+        .await
+        .expect("learning");
+    assert_eq!(learning.written, 1);
+
+    let event_namespace = "simulation/events";
+    let tool_call = RawMemoryEvent {
+        id: "tool-call-1".to_string(),
+        namespace: event_namespace.to_string(),
+        event_type: "tool_call".to_string(),
+        content: "The shell tool ran cargo test successfully.".to_string(),
+        occurred_at: None,
+        session_id: Some("thread-1".to_string()),
+        metadata: json!({
+            "tool_name": "shell",
+            "arguments": {"command": "cargo test"},
+            "outcome": "success"
+        }),
+        taint: MemoryTaint::Internal,
+    };
+    let event_ingest = provider.as_event_ingest().expect("event ingest");
+    let event = event_ingest
+        .ingest_event(tool_call.clone())
+        .await
+        .expect("tool-call event");
+    assert_eq!(event.written, 1);
+    let replay = event_ingest
+        .ingest_event(tool_call)
+        .await
+        .expect("idempotent replay");
+    assert_eq!(replay.written, 0);
+    assert!(replay.already_ingested);
+    assert!(replay.ids.is_empty());
+
+    for (namespace, query) in [
+        (document_namespace, "launch architecture"),
+        (conversation_namespace, "launch date"),
+        ("learning:tooling", "package_manager"),
+        (event_namespace, "cargo test"),
+    ] {
+        let hits = provider
+            .recall(
+                query,
+                10,
+                &OwnedRecallOpts {
+                    namespace: Some(namespace.to_string()),
+                    ..OwnedRecallOpts::default()
+                },
+                None,
+            )
+            .await
+            .expect("recall");
+        assert!(!hits.is_empty(), "{namespace} was not recallable");
+    }
+
+    let answer = provider
+        .as_answer()
+        .expect("answer")
+        .answer(AnswerRequest {
+            query: "When is launch?".to_string(),
+            limit: 5,
+            recall: OwnedRecallOpts {
+                namespace: Some(conversation_namespace.to_string()),
+                ..OwnedRecallOpts::default()
+            },
+            scope: None,
+            instructions: None,
+        })
+        .await
+        .expect("grounded answer");
+    assert!(answer.answer.contains("When is launch?"));
+    assert_eq!(answer.citations.len(), 1);
+    assert_eq!(answer.model.as_deref(), Some("reasoning"));
+
+    let global_answer = provider
+        .as_answer()
+        .expect("answer")
+        .answer(AnswerRequest::new("What is globally relevant?"))
+        .await
+        .expect("default global answer request");
+    assert!(!global_answer.answer.is_empty());
+
+    let filtered_answer = provider
+        .as_answer()
+        .expect("answer")
+        .answer(AnswerRequest {
+            query: "When is launch?".to_string(),
+            limit: 5,
+            recall: OwnedRecallOpts {
+                namespace: Some(conversation_namespace.to_string()),
+                session_id: Some("thread-1".to_string()),
+                ..OwnedRecallOpts::default()
+            },
+            scope: None,
+            instructions: None,
+        })
+        .await;
+    assert!(matches!(
+        filtered_answer,
+        Err(tinymemory_api::error::MemoryError::Invalid(_))
+    ));
+
+    let invalid_document = provider
+        .as_document_ingest()
+        .expect("document ingest")
+        .ingest_document(cortex_ingest_item(
+            document_namespace,
+            "",
+            "not addressable",
+            None,
+        ))
+        .await;
+    assert!(matches!(
+        invalid_document,
+        Err(tinymemory_api::error::MemoryError::Invalid(_))
+    ));
+
+    let events: Value = reqwest::Client::new()
+        .get(format!(
+            "{endpoint}/v1/events?scope=tm%3Asimulation%2Ftm%3Aevents&limit=20"
+        ))
+        .bearer_auth("test-key")
+        .send()
+        .await
+        .expect("event listing")
+        .json()
+        .await
+        .expect("event JSON");
+    let tool_event = events["items"]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["modality"] == "tool_call"))
+        .expect("tool-call event retained its modality");
+    let envelope: Value = serde_json::from_str(
+        tool_event["content"]["text"]
+            .as_str()
+            .expect("tool-call envelope text"),
+    )
+    .expect("tool-call envelope JSON");
+    assert_eq!(envelope["x"]["metadata"]["tool_name"], "shell");
+    assert_eq!(envelope["x"]["metadata"]["outcome"], "success");
 }
 
 /// The suite's write-path assertions only run when the driver retains.

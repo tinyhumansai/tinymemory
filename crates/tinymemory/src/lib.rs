@@ -90,7 +90,7 @@ pub use tinymemory_tinycortex as tinycortex;
 
 /// The HTTP engines, when any remote-engine feature is on.
 ///
-/// One module for all three because they share one adapter crate — enabling
+/// One module for all remote engines because they share one adapter crate — enabling
 /// two of them costs one dependency, not two. The per-engine features still
 /// exist so a host states which it actually uses, and so a future split can
 /// happen without changing how hosts ask for them.
@@ -98,6 +98,7 @@ pub use tinymemory_tinycortex as tinycortex;
     feature = "supermemory",
     feature = "mem0",
     feature = "cognee",
+    feature = "cortex",
     feature = "agentmemory",
     feature = "livingbrain"
 ))]

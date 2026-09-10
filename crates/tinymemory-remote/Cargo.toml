@@ -28,6 +28,8 @@ serde = { version = "1", features = ["derive"] }
 # Streaming a capped body needs a Stream combinator.
 futures = "0.3"
 serde_json = "1"
+# Learning timestamps arrive as Unix seconds and CortexDB requires RFC 3339.
+chrono = { version = "0.4", default-features = false, features = ["std"] }
 # Supermemory custom ids are bounded, so namespace/key identities use SHA-256.
 sha2 = "0.11"
 

@@ -12,6 +12,7 @@ pub mod cognee;
 mod cognee_graph;
 mod common;
 pub mod cortex;
+mod cortex_provider;
 mod graph_provider;
 pub mod livingbrain;
 pub mod mem0;
@@ -23,6 +24,7 @@ pub use agentmemory::{AgentMemoryMemory, AGENTMEMORY_API_ENDPOINT, AGENTMEMORY_D
 pub use cognee::{CogneeMemory, COGNEE_DRIVER_ID};
 pub use cognee_graph::CogneeGraph;
 pub use cortex::{CortexMemory, CORTEX_API_ENDPOINT, CORTEX_DRIVER_ID};
+pub use cortex_provider::CortexProvider;
 pub use graph_provider::GraphMemoryProvider;
 pub use livingbrain::{
     Capture, CaptureBatchReceipt, CaptureKind, CaptureReceipt, CaptureSource, ChatSender, ChatTurn,
@@ -58,8 +60,9 @@ pub fn cognee_provider(memory: CogneeMemory) -> MemoryTraitProvider {
 
 /// Wrap a CortexDB HTTP backend as a bound TinyMemory provider.
 #[must_use]
-pub fn cortex_provider(memory: CortexMemory) -> MemoryTraitProvider {
-    MemoryTraitProvider::new(Arc::new(memory), CORTEX_DRIVER_ID)
+pub fn cortex_provider(memory: CortexMemory) -> CortexProvider {
+    let client = memory.operation_client();
+    CortexProvider::new(memory, client)
 }
 
 /// Wrap an AgentMemory HTTP backend as a bound TinyMemory provider.

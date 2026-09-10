@@ -77,9 +77,9 @@ composition — no storage engine, no HTTP stack, no native library.
 | Feature | Brings in |
 | --- | --- |
 | `tinycortex` | the embedded TinyCortex engine, as `tinymemory::tinycortex` |
-| `supermemory`, `mem0`, `cognee`, `agentmemory` | the matching HTTP adapter, as `tinymemory::remote` |
+| `supermemory`, `mem0`, `cognee`, `cortex`, `agentmemory` | the matching HTTP adapter, as `tinymemory::remote` |
 | `livingbrain` | the LivingBrain Brain API client, as `tinymemory::remote` (not a `MemoryProvider`) |
-| `engines` | all five of the above |
+| `engines` | all six `MemoryProvider` engines above |
 | `core` | `tinymemory::core` — the memory subsystem |
 | `sync` | `tinymemory::sync` — the Composio normalisers |
 | `sources` | `tinymemory::sources` — source contracts and local readers |
@@ -114,7 +114,7 @@ error.
 None of these crates are on crates.io yet, so you take the facade by git.
 Which patch table you need depends on the engine you pick.
 
-**Remote engines and clients (Supermemory, Mem0, Cognee, AgentMemory, LivingBrain) — no patch table:**
+**Remote engines and clients (Supermemory, Mem0, Cognee, CortexDB, AgentMemory, LivingBrain) — no patch table:**
 
 ```toml
 [dependencies]
@@ -190,6 +190,7 @@ minimal working wiring.
 | `supermemory` | Supermemory, hosted | external | 3 (mandatory) |
 | `mem0` | Mem0, hosted (`cloud`) or self-hosted | external | mandatory + conversation ingest |
 | `cognee` | Cognee, hosted or self-hosted | external | 3 (mandatory) |
+| `cortex` | CortexDB, hosted or self-hosted | external | mandatory + document, conversation, learning, event, and answer |
 | `agentmemory` | AgentMemory, self-hosted | external | 3 (mandatory) |
 | `memory-git` | add-on: git-backed diff snapshots | — | requires `tinycortex` |
 | *(none)* | `NullMemoryProvider` | null | contract + registry only, 40 crates |

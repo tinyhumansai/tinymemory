@@ -26,6 +26,11 @@ cargo run -p tinymemory-remote --example conformance -- cognee http://localhost:
 docker compose -f integration/remote-engines/docker-compose.yml \
   --profile agentmemory up -d --build
 cargo run -p tinymemory-remote --example conformance -- agentmemory http://localhost:3111
+
+./scripts/ci/cortexdb-e2e.sh
+
+# Real local Ladder on 127.0.0.1:6969. LADDER_API_KEY must already be exported.
+./scripts/cortexdb-simulation.sh --ladder
 ```
 
 The same conformance command can target managed services. Supermemory uses the
@@ -60,6 +65,18 @@ AgentMemory is pinned to its `v0.9.29` source release and the compatible
 the native REST routes, persistence, and TinyMemory envelope translation
 without requiring external credentials. CI runs the same harness through
 `scripts/ci/agentmemory-e2e.sh` on every push and pull request.
+
+CortexDB is pinned to `v0.9.9`. Its CI profile enables the full Ladder-compatible
+memory pipeline against the deterministic OpenAI-compatible fixture. The live
+script points the same image and configuration at the host's `vectors`,
+`flash`, `reasoning`, and `max-reasoning` ladders. Cohere reranking and binary
+media processors are intentionally outside this profile.
+
+The live script fixes the inference destination to `host.docker.internal:6969`;
+it cannot be redirected to a remote plaintext host. The Ladder bearer crosses
+only the host-local Docker bridge and is never printed or persisted in the
+repository. CortexDB's own reusable bearer is separately restricted to HTTPS,
+with literal loopback HTTP allowed for this harness.
 
 Stop the harness without deleting its named volumes:
 
