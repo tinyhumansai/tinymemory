@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tinybus::Connection;
-use tinyinference::model::{ChatModel, ModelRequest, ModelResponse};
+use tinyinference_llm::model::{ChatModel, ModelRequest, ModelResponse};
 
 use crate::ModuleConfig;
 
@@ -97,7 +97,7 @@ impl ChatModel<()> for BusChatModel {
         &self,
         _state: &(),
         request: ModelRequest,
-    ) -> tinyinference::Result<ModelResponse> {
+    ) -> tinyinference_llm::Result<ModelResponse> {
         let proxy = self
             .connection
             .proxy(
@@ -105,11 +105,11 @@ impl ChatModel<()> for BusChatModel {
                 CHAT_HOST_OBJECT_PATH,
                 CHAT_HOST_INTERFACE,
             )
-            .map_err(|error| tinyinference::Error::Model(error.to_string()))?;
+            .map_err(|error| tinyinference_llm::Error::Model(error.to_string()))?;
         proxy
             .call("Complete", (self.role.clone(), request))
             .await
-            .map_err(|error| tinyinference::Error::Model(error.to_string()))
+            .map_err(|error| tinyinference_llm::Error::Model(error.to_string()))
     }
 }
 

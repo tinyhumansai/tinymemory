@@ -8,8 +8,8 @@ use crate::engine::backend::tree::runtime::{
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Timelike, Utc};
-use tinyinference::message::Message;
-use tinyinference::model::{ChatModel, ModelRequest};
+use tinyinference_llm::message::Message;
+use tinyinference_llm::model::{ChatModel, ModelRequest};
 
 use crate::engine::engine_config;
 use crate::Config;

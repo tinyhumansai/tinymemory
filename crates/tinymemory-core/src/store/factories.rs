@@ -18,7 +18,7 @@ use rusqlite::Connection;
 use crate::embedding_host::require_embedding_host;
 use crate::store::namespace_store::UnifiedMemory;
 use crate::traits::Memory;
-use tinyinference::embeddings::{DEFAULT_OLLAMA_DIMENSIONS, DEFAULT_OLLAMA_MODEL};
+use tinyinference_embeddings::{DEFAULT_OLLAMA_DIMENSIONS, DEFAULT_OLLAMA_MODEL};
 use tinymemory_api::host::MemoryConfig;
 use tinymemory_api::host::{format_embedding_signature, EmbeddingProvider};
 use tinymemory_api::host::{EmbeddingRouteConfig, StorageProviderConfig};

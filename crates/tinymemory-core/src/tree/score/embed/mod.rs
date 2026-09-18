@@ -87,7 +87,7 @@ pub trait Embedder: Send + Sync {
 
 /// Adapts the canonical host embedding-provider contract to the legacy
 /// memory-tree embedder shape. Concrete network implementations live in
-/// `tinyinference::embeddings`; this bridge owns only dimension checks
+/// `tinyinference_llm::embeddings`; this bridge owns only dimension checks
 /// and the memory tree's per-position batch fallback contract.
 pub struct ProviderEmbedder {
     inner: Box<dyn tinymemory_api::host::EmbeddingProvider>,

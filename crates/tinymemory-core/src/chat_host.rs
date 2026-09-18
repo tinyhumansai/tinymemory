@@ -8,7 +8,7 @@
 //!
 //! # Why this trait is here and not in `tinymemory-api`
 //!
-//! It names [`tinyinference::model::ChatModel`], and the contract crate is
+//! It names [`tinyinference_llm::model::ChatModel`], and the contract crate is
 //! deliberately dependency-light — it must not pull in an inference SDK. This
 //! crate already depends on TinyInference, so it is the one place that can name
 //! both the model trait and the config seam. The host implements it here.
@@ -20,7 +20,7 @@
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use tinyinference::model::{ChatModel, ModelResponse};
+use tinyinference_llm::model::{ChatModel, ModelResponse};
 
 use crate::Config;
 

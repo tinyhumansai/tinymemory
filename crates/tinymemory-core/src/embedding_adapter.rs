@@ -2,14 +2,14 @@
 //! model trait onto the seam's [`EmbeddingProvider`].
 //!
 //! It lives in this crate rather than in `tinymemory-api` because the contract
-//! crate must stay dependency-light and cannot name `tinyinference`; and rather
+//! crate must stay dependency-light and cannot name `tinyinference-llm`; and rather
 //! than in the host because the tree's embedder factory — which is core code —
 //! builds Ollama models directly and needs to wrap them. The host re-exports it
 //! from `inference::embeddings`, so every existing path there keeps resolving
 //! and keeps naming this one type.
 
 use async_trait::async_trait;
-use tinyinference::embeddings::EmbeddingModel;
+use tinyinference_embeddings::EmbeddingModel;
 
 pub use tinymemory_api::host::{format_embedding_signature, EmbeddingProvider};
 

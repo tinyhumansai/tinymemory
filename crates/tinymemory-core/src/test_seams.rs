@@ -72,13 +72,13 @@ impl crate::chat_host::ChatHost for TestChatHost {
         _role: &str,
         _config: &Config,
         _temperature: f64,
-    ) -> Result<(Arc<dyn tinyinference::model::ChatModel<()>>, String), String> {
+    ) -> Result<(Arc<dyn tinyinference_llm::model::ChatModel<()>>, String), String> {
         Err("TestChatHost does not build models — model routing is host behaviour".to_string())
     }
 
     fn usage_from_response(
         &self,
-        _response: &tinyinference::model::ModelResponse,
+        _response: &tinyinference_llm::model::ModelResponse,
     ) -> Option<tinymemory_api::host::UsageInfo> {
         None
     }

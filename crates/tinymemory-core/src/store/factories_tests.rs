@@ -91,7 +91,7 @@ fn embedding_settings_local_overrides_memory_config() {
     assert_eq!(model, "nomic-embed-text:latest");
     assert_eq!(
         dims,
-        tinyinference::embeddings::DEFAULT_OLLAMA_DIMENSIONS,
+        tinyinference_embeddings::DEFAULT_OLLAMA_DIMENSIONS,
         "dimensions must default to Ollama default"
     );
 }
@@ -105,10 +105,10 @@ fn embedding_settings_local_with_empty_model_uses_default() {
     assert_eq!(provider, "ollama");
     assert_eq!(
         model,
-        tinyinference::embeddings::DEFAULT_OLLAMA_MODEL,
+        tinyinference_embeddings::DEFAULT_OLLAMA_MODEL,
         "empty model ID must fall back to default Ollama model"
     );
-    assert_eq!(dims, tinyinference::embeddings::DEFAULT_OLLAMA_DIMENSIONS);
+    assert_eq!(dims, tinyinference_embeddings::DEFAULT_OLLAMA_DIMENSIONS);
 }
 
 #[test]
@@ -223,7 +223,7 @@ async fn start_mock_ollama() -> String {
 /// the legacy `local_ai.usage.embeddings = true` flag was set. Used so
 /// the existing test scenarios continue to drive the local code path.
 fn local_embedding_for_test() -> &'static str {
-    tinyinference::embeddings::DEFAULT_OLLAMA_MODEL
+    tinyinference_embeddings::DEFAULT_OLLAMA_MODEL
 }
 
 #[tokio::test]

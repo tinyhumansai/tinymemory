@@ -53,7 +53,7 @@ tinymemory-tinycortex = { path = "../tinymemory-tinycortex", features = ["memory
 # upstream, so a Linux or Windows artifact still compiles none of them.
 tinycortex = { version = "0.1", features = ["contacts"] }
 # Provider-neutral chat request and response types carried over TinyBus.
-tinyinference = "0.2"
+tinyinference-llm = "0.2"
 # TinyBus provides the typed service interface and the dynamic module host ABI.
 # Reached by path now that this crate is its own workspace root: the nested
 # checkout's `[workspace.package]` resolves correctly from here.
@@ -112,12 +112,16 @@ tempfile = "3"
 tinymemory-api = { path = "../tinymemory-api" }
 
 [patch."https://github.com/tinyhumansai/tinyinference"]
-tinyinference = { path = "../../vendor/tinyinference/crates/tinyinference" }
+tinyinference-core = { path = "../../vendor/tinyinference/crates/tinyinference-core" }
+tinyinference-embeddings = { path = "../../vendor/tinyinference/crates/tinyinference-embeddings" }
+tinyinference-llm = { path = "../../vendor/tinyinference/crates/tinyinference-llm" }
 
 [patch.crates-io]
 tinycortex = { path = "../../vendor/tinycortex" }
 tinycortex-api = { path = "../../vendor/tinycortex/api" }
-tinyinference = { path = "../../vendor/tinyinference/crates/tinyinference" }
+tinyinference-core = { path = "../../vendor/tinyinference/crates/tinyinference-core" }
+tinyinference-embeddings = { path = "../../vendor/tinyinference/crates/tinyinference-embeddings" }
+tinyinference-llm = { path = "../../vendor/tinyinference/crates/tinyinference-llm" }
 
 # Mirrors the root package's set. `unsafe_code = "forbid"` holds even though
 # `module_export!` emits `unsafe extern "C"` symbols: the macro's expansion

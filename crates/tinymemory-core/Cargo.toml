@@ -40,7 +40,8 @@ tinycortex-api = { version = "0.1" }
 # Provider-neutral chat-model and embedding primitives used by the tree
 # summarizer and embedding factory. Agent runtime and session behavior do not
 # belong in the memory layer.
-tinyinference = "0.2"
+tinyinference-embeddings = "0.2"
+tinyinference-llm = "0.2"
 anyhow = "1.0"
 async-trait = "0.1"
 # NO `git2` HERE, DELIBERATELY — do not add it back. `diff/` holds the ops and
