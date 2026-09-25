@@ -382,13 +382,25 @@ jobs:
       - name: Unit tests
         run: cargo test --manifest-path crates/tinymemory-module/Cargo.toml --lib
 
+      - name: Linked module exports
+        run: |
+          cargo clippy --locked --manifest-path crates/tinymemory-module/Cargo.toml \
+            --all-targets --features static-link -- -D warnings
+          cargo test --locked --manifest-path crates/tinymemory-module/Cargo.toml \
+            --features static-link --test static_link
+
       # The module is excluded from the root workspace, so the root coverage
-      # gate cannot see it. Hold its production code to the same floor here.
+      # gate cannot see it. Keep both profiles in one coverage report: default
+      # mode runs the dynamic loader E2E, while all-features runs the linked
+      # host test. The loader cannot open a static-link artifact, so these must
+      # be separate test passes over the same coverage target.
       - name: Enforce module production-source coverage
         run: |
           set -euo pipefail
           cargo llvm-cov --manifest-path crates/tinymemory-module/Cargo.toml \
-            --workspace --all-features \
+            --workspace --no-report
+          cargo llvm-cov --manifest-path crates/tinymemory-module/Cargo.toml \
+            --workspace --all-features --no-clean \
             --ignore-filename-regex '(^|/)(tests|vendor)/|(^|/)(test|tests|test_helpers|test_support|test_seams)\.rs$|(_test|_tests|_test_support)\.rs$|/crates/tinymemory-core/src/(engine/parity|tree/retrieval/benchmarks)\.rs$|/crates/tinymemory-conformance/src/reference/full\.rs$' \
             --fail-under-lines 80 --summary-only \
             | tee "$GITHUB_STEP_SUMMARY"

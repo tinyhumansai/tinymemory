@@ -31,6 +31,9 @@
 //! `--ignored` alone runs them all in one process and the second will hang. This
 //! is the same constraint the `tinywallet` module's loader tests carry.
 
+// All-features coverage builds the linked mode, whose ABI entries are Rust
+// symbols. This suite loads the default cdylib by its C symbols instead.
+#![cfg(not(feature = "static-link"))]
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,

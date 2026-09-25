@@ -1,8 +1,10 @@
 //! Loadable `TinyBus` module adapter for `TinyMemory`.
 //!
 //! This private workspace crate keeps the vendored `TinyBus` dependency out of
-//! the published `tinymemory` crates. Its `cdylib` output is the
-//! target-specific binary distributed in GitHub releases.
+//! the published `tinymemory` crates. Its default `cdylib` output is the
+//! target-specific binary distributed in GitHub releases. With `static-link`,
+//! a host can instead reference the descriptor, manifest, and initializer by
+//! Rust path without colliding with another module's C symbols.
 //!
 //! # What this module is for, stated honestly
 //!
@@ -82,6 +84,10 @@ pub use embedding::{
 };
 pub use host::{RUNTIME_HOST_BUS_NAME, RUNTIME_HOST_INTERFACE, RUNTIME_HOST_OBJECT_PATH};
 pub use service::{BUS_NAME, OBJECT_PATH};
+
+/// Rust-addressable TinyBus ABI entries for an in-process linked host.
+#[cfg(feature = "static-link")]
+pub use exports::{tinybus_module_init_v1, tinybus_module_manifest_v1, TINYBUS_MODULE_ABI_V1};
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -498,16 +504,21 @@ fn setup_error(message: impl Into<String>) -> BusError {
     }
 }
 
-// Isolate the generated public C symbols so the lint exception cannot hide
-// undocumented Rust API. Their contract is TinyBus ABI v1, and none is a
-// Rust-callable export from this crate.
+// Isolate the generated ABI symbols so the lint exception cannot hide
+// undocumented Rust API. The static-link feature exports these by Rust path;
+// the default gives them the established dynamic C symbol names.
 #[allow(
     missing_docs,
     unreachable_pub,
     reason = "generated C ABI symbols are documented by the TinyBus module SDK"
 )]
 mod exports {
-    tinybus_module::module_export! {
+    #[cfg(not(feature = "static-link"))]
+    use tinybus_module::module_export as export_module;
+    #[cfg(feature = "static-link")]
+    use tinybus_module::module_export_static as export_module;
+
+    export_module! {
         setup = super::setup,
         config = super::ModuleConfig,
         // Eight, derived rather than picked. Two are the floor this module has

@@ -21,6 +21,11 @@ publish = false
 # without going through the loader; the `cdylib` is what a release ships.
 crate-type = ["rlib", "cdylib"]
 
+[features]
+# Link this module into a host and use Rust-addressable ABI entry points.
+# The default keeps the existing loadable cdylib exports.
+static-link = []
+
 [dependencies]
 # The contract. Every type crossing the bus is one of these, and all of them
 # already carry serde impls — which is why this module needs no `wire` module of
@@ -123,12 +128,11 @@ tinyinference-core = { path = "../../vendor/tinyinference/crates/tinyinference-c
 tinyinference-embeddings = { path = "../../vendor/tinyinference/crates/tinyinference-embeddings" }
 tinyinference-llm = { path = "../../vendor/tinyinference/crates/tinyinference-llm" }
 
-# Mirrors the root package's set. `unsafe_code = "forbid"` holds even though
-# `module_export!` emits `unsafe extern "C"` symbols: the macro's expansion
-# carries its own hygiene context, so the C ABI surface does not trip the lint
-# here. Verified against `tinywallet-module`, which forbids it too and builds.
+# The linked-host integration test must call TinyBus's unsafe `attach_raw` ABI
+# and borrow the generated manifest bytes. Keep unsafe denied everywhere else;
+# the test documents its narrow lifetime and pointer invariants at each call.
 [lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 missing_docs = "warn"
 missing_debug_implementations = "warn"
 unreachable_pub = "warn"

@@ -3,6 +3,14 @@
 `crates/tinymemory-module` is a `cdylib` speaking the TinyBus module ABI. A host
 loads it and gets a bound memory driver without compiling the engine.
 
+The default build exports the TinyBus v1 C symbols for dynamic loading. A host
+that compiles the module into its own executable can enable the module crate's
+`static-link` feature and pass `tinymemory_module::TINYBUS_MODULE_ABI_V1`,
+`tinymemory_module::tinybus_module_manifest_v1`, and
+`tinymemory_module::tinybus_module_init_v1` to the linked TinyBus module host.
+Both modes use the same manifest declaration; the linked entry points have no
+unmangled global C symbol names.
+
 ## What it buys, and what it does not
 
 **It sheds no dependencies.** This is measured, not assumed, and it is stated
