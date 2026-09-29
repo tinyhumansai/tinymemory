@@ -1845,6 +1845,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinymemory-conversations"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "tinymemory-core"
 version = "0.1.0"
 dependencies = [

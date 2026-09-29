@@ -23,6 +23,7 @@ default-members = [
     "crates/tinymemory-api",
     "crates/tinymemory-bus",
     "crates/tinymemory-conformance",
+    "crates/tinymemory-conversations",
     "crates/tinymemory-core",
     "crates/tinymemory-remote",
     "crates/tinymemory-sources",
