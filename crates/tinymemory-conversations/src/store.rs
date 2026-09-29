@@ -139,6 +139,7 @@ impl ConversationStore {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(super) fn thread_lock_identity_for_test(&self, thread_id: &str) -> usize {
         std::sync::Arc::as_ptr(&self.locks.thread(thread_id)) as usize
     }
