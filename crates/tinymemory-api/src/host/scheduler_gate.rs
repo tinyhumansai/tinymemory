@@ -112,8 +112,9 @@ impl Default for SchedulerGateConfig {
 // `Policy` and `PauseReason` moved here from the host's
 // `cron::scheduler_gate::policy` because the extracted sync loops read them on
 // every tick to decide whether to back off. They are inert `Copy` enums with no
-// dependencies; the *decision function* that produces a `Policy` from sampled
-X
+// dependencies. The pure *decision function* that produces a `Policy` from
+// sampled signals lives beside them in `scheduler_gate_decide`; only the
+// sampling of those signals stays in the host, where the hardware is.
 
 /// Why the gate is currently paused. Carried by [`Policy::Paused`] so
 /// downstream consumers (UI, logging, observability) can surface a

@@ -5,9 +5,7 @@
 //! CPU sampler, server-mode detection) stays in the host that owns the
 //! hardware; this crate only owns the vocabulary and the decision.
 
-use super::scheduler_gate::{
-    PauseReason, Policy, SchedulerGateConfig, SchedulerGateMode,
-};
+use super::scheduler_gate::{PauseReason, Policy, SchedulerGateConfig, SchedulerGateMode};
 
 /// One snapshot of the host signals the gate decides on.
 #[derive(Debug, Clone, Copy)]
