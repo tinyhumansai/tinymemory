@@ -43,6 +43,7 @@
 pub mod cloud_providers;
 pub mod local_ai;
 pub mod scheduler_gate;
+pub mod scheduler_gate_decide;
 pub mod storage_memory;
 pub mod subsystems;
 
@@ -74,6 +75,7 @@ pub use local_ai::{LocalAiConfig, LocalAiUsage};
 pub use nlp::{SpacyEntity, SpacyResponse};
 pub use routes::EmbeddingRouteConfig;
 pub use scheduler_gate::{PauseReason, Policy, SchedulerGateConfig, SchedulerGateMode};
+pub use scheduler_gate_decide::{decide, Signals};
 pub use storage_memory::{
     LlmBackend, MemoryConfig, MemoryTreeConfig, StorageConfig, StorageProviderConfig,
     StorageProviderSection, DEFAULT_CLOUD_LLM_MODEL,
