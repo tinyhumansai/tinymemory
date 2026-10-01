@@ -23,7 +23,7 @@ tokio = { version = "1", features = ["sync", "time", "rt"] }
 # Cross-platform battery probe. Maintained fork of the abandoned `battery`
 # crate. Off, there is no hardware probe at all and a machine is treated as
 # plugged in with no battery.
-starship-battery = { version = "0.12", optional = true }
+starship-battery = { version = "0.10", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }
