@@ -133,6 +133,8 @@ jobs:
             features: --no-default-features
           - name: documents
             features: --no-default-features --features documents
+          - name: documents-office
+            features: --no-default-features --features documents-office
           - name: sources network implication
             features: --no-default-features --features sources-network
           - name: safety

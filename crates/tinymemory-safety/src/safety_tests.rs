@@ -119,3 +119,34 @@ fn sanitize_json_redacts_values_beyond_max_depth() {
         .to_string()
         .contains(&format!("\"{REDACTED_SECRET}\"")));
 }
+
+#[test]
+fn sanitize_text_strips_a_one_time_secret_key_and_keeps_the_link() {
+    // The token regexes key on `secret` followed by `=`, `:` or a space, so a
+    // `/secret/<key>` path used to pass through verbatim.
+    let sanitized = sanitize_text("open https://ots.example/secret/AbCdEf123456 soon");
+    assert_eq!(
+        sanitized.value,
+        "open https://ots.example/secret/[REDACTED] soon"
+    );
+    assert_eq!(sanitized.report.text_redactions, 1);
+}
+
+#[test]
+fn sanitize_text_redacts_a_short_bearer_value() {
+    // Under the bearer regex's eight-character floor, so it used to survive.
+    let sanitized = sanitize_text("curl -H 'Authorization: Bearer s3cret' api");
+    assert_eq!(
+        sanitized.value,
+        "curl -H 'Authorization: Bearer [REDACTED]' api"
+    );
+    assert!(sanitized.report.changed());
+}
+
+#[test]
+fn sanitize_text_leaves_bearer_prose_alone() {
+    let prose = "the ring bearer walked down the aisle";
+    let sanitized = sanitize_text(prose);
+    assert_eq!(sanitized.value, prose);
+    assert!(!sanitized.report.changed());
+}

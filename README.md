@@ -54,6 +54,7 @@ the CortexDB engines.
 | Feature | Adds |
 | --- | --- |
 | `documents` | `tinymemory::documents` |
+| `documents-office` | `tinymemory::documents::OfficeConverter` (PDF, DOCX, PPTX, XLSX) |
 | `sources` | `tinymemory::sources` (local readers) |
 | `sources-network` | the GitHub, RSS, web-page and URL-fetch readers (implies `sources`) |
 | `safety` | `tinymemory::safety` |

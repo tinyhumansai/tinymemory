@@ -22,10 +22,36 @@ serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 # The crate-wide `Error`.
 thiserror = "2"
+# The office converter (`office` feature): text out of the formats people
+# actually drop into memory — a contract PDF, a spec `.docx`, a pricing
+# `.xlsx`, a deck. All pure Rust with no system libraries.
+#
+# `pdf-extract` reads a PDF's text layer. `zip` + `quick-xml` are the whole of
+# `.docx` and `.pptx`, which are zip archives of XML: walking them directly is
+# smaller than a document library. `.xlsx` is not — shared-string tables and
+# cell typing make hand-parsing it a liability — so `calamine` reads that one.
+# `zip` and `quick-xml` are the versions `calamine` already links, so the
+# graph carries one copy of each.
+pdf-extract = { version = "0.12", optional = true }
+calamine = { version = "0.36", optional = true }
+quick-xml = { version = "0.41", optional = true }
+zip = { version = "8", default-features = false, features = ["deflate"], optional = true }
 
 [dev-dependencies]
 # The converter and item paths are async.
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
+# The format and office tests build their OOXML fixtures in code, so each test
+# says what it is asserting about instead of pointing at an opaque binary.
+zip = { version = "8", default-features = false, features = ["deflate"] }
+
+[features]
+# Nothing by default: text, markdown, HTML and code need no extractor.
+default = []
+# `OfficeConverter`: PDF, DOCX, PPTX and XLSX to markdown, for a host to
+# prepend to its `ConverterChain`. Off by default because a PDF parser and a
+# spreadsheet reader are real weight a host that takes only text should not
+# link.
+office = ["dep:pdf-extract", "dep:calamine", "dep:quick-xml", "dep:zip"]
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -33,12 +33,13 @@ caller's to state.
 
 | Item | What it is |
 | --- | --- |
-| `DocumentFormat` | markdown / plain text / HTML / code / PDF / DOCX / unknown, and `sniff` |
+| `DocumentFormat` | markdown / plain text / HTML / code / PDF / DOCX / XLSX / PPTX / unknown, and `sniff` |
 | `language_for_path` | stable lowercase language name (`rust`, `python`, `typescript`) for a code file |
 | `RawDocument` | bytes plus filename, declared MIME, and origin |
 | `ConvertedDocument` | markdown plus title, source format, language, and converter metadata |
 | `DocumentConverter` | the conversion seam — object-safe and async |
 | `NativeConverter` | markdown, text, HTML and code, with no dependencies |
+| `OfficeConverter` | PDF, DOCX, PPTX and XLSX, in-process (feature `office`) |
 | `ConverterChain` | converters in priority order; first claim wins |
 | `document_item` / `converted_item` | the conversion wrapped as a `StoreItem::Document` |
 | `markdown_from_text` | the synchronous core, for callers that already hold text |
@@ -54,15 +55,30 @@ caller's to state.
 | `mime` | the detected format's canonical type (`text/markdown`, `text/html`, `text/x-source`, ...) |
 | `meta` | the caller's, with `language` filled from the extension when unset |
 
-## PDF and DOCX
+## PDF and Office documents
 
-Not handled here. Both need a real extractor, and which one a deployment uses
-is its own decision — an in-process crate, a TinyBus module, a service. So
+Not handled by default. They need a real extractor, and which one a deployment
+uses is its own decision — an in-process crate, a TinyBus module, a service. So
 conversion is a trait a host binds:
 
 ```rust,ignore
 let chain = ConverterChain::default().prepend(Box::new(MyPdfConverter));
 ```
+
+The `office` feature ships one such binding, `OfficeConverter`: PDF (text
+layer only — a scanned PDF is refused as having no text), DOCX, PPTX (slides
+in numeric order) and XLSX (one `sheet | cell | cell` line per row), all pure
+Rust. It refuses hostile input rather than allocating for it: an archive whose
+declared uncompressed size exceeds `MAX_DECOMPRESSED_BYTES` (64 MiB), and a
+spreadsheet whose dense used range exceeds `MAX_SPREADSHEET_DENSE_CELLS`
+(1,000,000). Unreadable documents are `Error::Invalid`. Parsing is CPU-bound;
+a host on a shared executor calls `OfficeConverter::convert_blocking` from its
+own blocking pool.
+
+A zip upload is told apart by its part names (`word/`, `xl/`, `ppt/`) read
+from the central directory, so an `.xlsx` sent as `application/octet-stream`
+still sniffs as XLSX. When the parts say nothing, an Office label refines the
+container, and `Docx` is the fallback.
 
 A format nothing in the chain claims is `Error::UnsupportedFormat`, naming the
 format and listing what the build *can* convert. It is never a silent empty
@@ -78,3 +94,9 @@ success.
 - **Errors map onto the contract.** `From<Error> for tinymemory_api::Error`:
   input problems are `InvalidRequest`, a missing converter is `Unsupported`,
   a converter's own failure is `Engine`.
+
+## Features
+
+- `office` — `OfficeConverter` (`pdf-extract`, `calamine`, `zip`,
+  `quick-xml`). Off by default; it links a PDF parser and a spreadsheet reader
+  a text-only host has no use for.

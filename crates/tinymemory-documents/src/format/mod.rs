@@ -8,6 +8,8 @@
 //! order of trustworthiness — magic bytes first, because they are the only
 //! signal a caller cannot get wrong.
 
+mod ooxml;
+
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -33,6 +35,11 @@ pub enum DocumentFormat {
     Pdf,
     /// Office Open XML word processing (`.docx`). Needs a real extractor.
     Docx,
+    /// Office Open XML spreadsheet (`.xlsx`, macro-enabled `.xlsm`). Needs a
+    /// real extractor.
+    Xlsx,
+    /// Office Open XML presentation (`.pptx`). Needs a real extractor.
+    Pptx,
     /// A format detection could not place.
     Unknown,
 }
@@ -48,6 +55,10 @@ impl DocumentFormat {
             Self::Code => "text/x-source",
             Self::Pdf => "application/pdf",
             Self::Docx => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            Self::Xlsx => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            Self::Pptx => {
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            }
             Self::Unknown => "application/octet-stream",
         }
     }
@@ -64,6 +75,8 @@ impl DocumentFormat {
             Self::Code => "txt",
             Self::Pdf => "pdf",
             Self::Docx => "docx",
+            Self::Xlsx => "xlsx",
+            Self::Pptx => "pptx",
             Self::Unknown => "bin",
         }
     }
@@ -80,13 +93,37 @@ impl DocumentFormat {
         )
     }
 
+    /// Whether this is one of the Office Open XML formats — a zip of XML
+    /// parts, which is what the zip magic bytes can be refined into.
+    fn is_ooxml(self) -> bool {
+        matches!(self, Self::Docx | Self::Xlsx | Self::Pptx)
+    }
+
     /// Detect the format from every signal available.
     ///
     /// Magic bytes win when present, because they are the one signal a caller
     /// cannot get wrong. A declared MIME type comes next, then the filename,
     /// and a textual buffer with no other evidence is plain text.
+    ///
+    /// A zip is refined rather than trusted as-is: its part names (`word/`,
+    /// `xl/`, `ppt/`) say which Office format it is, a label naming an Office
+    /// format is consulted when they say nothing, and [`DocumentFormat::Docx`]
+    /// is the container fallback.
     #[must_use]
     pub fn sniff(bytes: &[u8], filename: Option<&str>, mime: Option<&str>) -> Self {
+        if bytes.starts_with(ZIP_MAGIC) {
+            // A zip is an Office package of *some* kind. Its part names say
+            // which; failing that, a label naming an Office format refines the
+            // container, and a label naming anything else is simply wrong.
+            return ooxml::kind(bytes)
+                .or_else(|| mime.and_then(Self::from_mime).filter(|f| f.is_ooxml()))
+                .or_else(|| {
+                    filename
+                        .and_then(Self::from_filename)
+                        .filter(|f| f.is_ooxml())
+                })
+                .unwrap_or(Self::Docx);
+        }
         if let Some(format) = Self::from_magic(bytes) {
             return format;
         }
@@ -118,11 +155,12 @@ impl DocumentFormat {
         if bytes.starts_with(b"%PDF-") {
             return Some(Self::Pdf);
         }
-        // Every OOXML file is a zip. Which OOXML it is lives in the archive,
-        // which needs a zip reader intake does not have — so this reports the
-        // container and lets the extractor disagree.
-        if bytes.starts_with(b"PK\x03\x04") {
-            return Some(Self::Docx);
+        // Every OOXML file is a zip, and which OOXML it is lives in the
+        // archive's part names. A zip whose parts say nothing — truncated, or
+        // not an Office package at all — reports the container as `Docx`, and
+        // the extractor is left to disagree.
+        if bytes.starts_with(ZIP_MAGIC) {
+            return Some(ooxml::kind(bytes).unwrap_or(Self::Docx));
         }
         None
     }
@@ -153,6 +191,13 @@ impl DocumentFormat {
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
                 Some(Self::Docx)
             }
+            // `application/vnd.ms-excel` and `application/vnd.ms-powerpoint`
+            // are the legacy binary formats, excluded for the reason above.
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            | "application/vnd.ms-excel.sheet.macroenabled.12" => Some(Self::Xlsx),
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation" => {
+                Some(Self::Pptx)
+            }
             _ => None,
         }
     }
@@ -176,6 +221,10 @@ impl DocumentFormat {
             // `.doc` is the legacy binary Word format, not Open XML `.docx`;
             // see the `application/msword` note in `from_mime`.
             "docx" => Some(Self::Docx),
+            // `.xlsm` is a workbook with macros; the cells read the same, and
+            // nothing here runs the macros. `.xls` and `.ppt` are legacy binary.
+            "xlsx" | "xlsm" => Some(Self::Xlsx),
+            "pptx" => Some(Self::Pptx),
             _ => None,
         }
     }
@@ -190,10 +239,16 @@ impl fmt::Display for DocumentFormat {
             Self::Code => "code",
             Self::Pdf => "pdf",
             Self::Docx => "docx",
+            Self::Xlsx => "xlsx",
+            Self::Pptx => "pptx",
             Self::Unknown => "unknown",
         })
     }
 }
+
+/// The local-file-header signature every zip archive — and so every Office
+/// Open XML document — opens with.
+const ZIP_MAGIC: &[u8] = b"PK\x03\x04";
 
 /// Whether a buffer opens with something only HTML opens with.
 ///

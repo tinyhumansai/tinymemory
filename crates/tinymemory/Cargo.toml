@@ -46,6 +46,9 @@ tokio = { version = "1", features = ["macros", "rt"] }
 default = []
 # Format sniffing and conversion to markdown (`tinymemory::documents`).
 documents = ["dep:tinymemory-documents"]
+# `OfficeConverter`: PDF, DOCX, PPTX and XLSX to markdown in-process, for a
+# host to prepend to its `ConverterChain`. Implies `documents`.
+documents-office = ["documents", "tinymemory-documents/office"]
 # Source readers that emit `StoreItem`s (`tinymemory::sources`).
 sources = ["dep:tinymemory-sources"]
 # The network readers in `sources` (GitHub, RSS, web pages, URL fetch).
@@ -61,7 +64,7 @@ legacy-import = ["import"]
 # The behavioural suite and reference engine (`tinymemory::conformance`).
 conformance = ["dep:tinymemory-conformance"]
 # Everything.
-full = ["documents", "sources-network", "safety", "context", "legacy-import", "conformance"]
+full = ["documents", "documents-office", "sources-network", "safety", "context", "legacy-import", "conformance"]
 
 [lints.rust]
 unsafe_code = "forbid"

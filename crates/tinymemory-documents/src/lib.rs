@@ -10,7 +10,9 @@
 //!    recognised by its name ([`language_for_path`]).
 //! 2. **Turn it into markdown.** [`DocumentConverter`] is the seam;
 //!    [`NativeConverter`] covers markdown, plain text, HTML and code with no
-//!    dependencies, and a host binds its own for PDF and DOCX.
+//!    dependencies; a host binds its own for PDF and Office documents, or
+//!    prepends `OfficeConverter` (feature `office`) for PDF, DOCX, PPTX and
+//!    XLSX.
 //! 3. **Wrap it as an item.** [`document_item`] produces a
 //!    `StoreItem::Document` with the caller's
 //!    [`MemoryMeta`](tinymemory_api::MemoryMeta), filling `language` from the
@@ -49,6 +51,8 @@ pub mod format;
 pub mod html;
 pub mod item;
 pub mod language;
+#[cfg(feature = "office")]
+pub mod office;
 
 pub use convert::{
     ConvertedDocument, ConverterChain, DocumentConverter, MAX_DOCUMENT_BYTES, NativeConverter,
@@ -58,3 +62,5 @@ pub use error::{Error, Result};
 pub use format::DocumentFormat;
 pub use item::{converted_item, document_item};
 pub use language::language_for_path;
+#[cfg(feature = "office")]
+pub use office::OfficeConverter;

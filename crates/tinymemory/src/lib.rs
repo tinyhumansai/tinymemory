@@ -9,6 +9,7 @@
 //! | Feature | Module | What it adds |
 //! | --- | --- | --- |
 //! | `documents` | `documents` | format sniffing and conversion to markdown |
+//! | `documents-office` | `documents` | `OfficeConverter`: PDF, DOCX, PPTX and XLSX to markdown |
 //! | `sources` / `sources-network` | `sources` | source readers emitting `StoreItem`s |
 //! | `safety` | `safety` | secret and PII scrubbing before `store` |
 //! | `context` | `context` | the `context.md` compiler |
@@ -46,7 +47,8 @@ pub use tinymemory_api as api;
 /// The CortexDB engines (`cortexdb`, `tinyhumans`).
 pub use tinymemory_cortex as cortex;
 
-/// Format sniffing and conversion to markdown.
+/// Format sniffing and conversion to markdown; `documents::OfficeConverter`
+/// (PDF, DOCX, PPTX, XLSX) needs `documents-office` as well.
 #[cfg(feature = "documents")]
 pub use tinymemory_documents as documents;
 
