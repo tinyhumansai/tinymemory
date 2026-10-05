@@ -10,6 +10,11 @@
 //! through `list`. It writes only under a workspace unique to the run and
 //! forgets it afterwards, so it can run against an engine that holds data.
 //!
+//! [`run_isolation`] checks two engines that serve two users of one backing
+//! store: neither user's list, get, fetch, recall, facet, forget or store may
+//! reach the other's items. A host that offers more than one user on a shared
+//! engine must pass it.
+//!
 //! [`ReferenceEngine`] is the calibration subject: obvious by inspection, so a
 //! failure against it means the assertion is wrong, not the engine.
 //!
@@ -34,4 +39,4 @@ mod suite;
 
 pub use error::{Error, Result};
 pub use reference::{CONSOLIDATED_TAG, REFERENCE_ENGINE_ID, ReferenceEngine};
-pub use suite::run;
+pub use suite::{run, run_isolation};

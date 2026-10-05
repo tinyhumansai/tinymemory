@@ -7,7 +7,7 @@ append-only event log on two wires:
 
 | Engine id | Constructor | Wire | Auth | Default endpoint |
 | --- | --- | --- | --- | --- |
-| `cortexdb` | `CortexEngine::direct` | `/v1/*`, bare JSON | API key (`CortexCredential`) | `https://api-v1.cortexdb.ai` |
+| `cortexdb` | `CortexEngine::direct` | `/v1/*`, bare JSON | API key (`CortexCredential`), plus a required `CortexTenancy` | `https://api-v1.cortexdb.ai` |
 | `tinyhumans` | `CortexEngine::tinyhumans` | `/memory/*`, `{success,data}` envelopes | `BearerSource`, resolved per request | `https://api.tinyhumans.ai` |
 
 Both descriptors declare `fetch_modes = [Hybrid]`: CortexDB's recall body
@@ -33,6 +33,7 @@ From `tinymemory_integrations::cortex`:
 
 - `CortexEngine::{new, direct, tinyhumans, wire}` (requests time out after 60s)
 - `CortexWire { Direct, TinyHumans }`, `CortexCredential { Static, Dynamic }`
+- `CortexTenancy { SingleUser, Pinned(TenantScope) }`, `TenantScope`, `SINGLE_USER`
 - `BearerSource` (async `bearer()`), `StaticBearer` (redacted `Debug`)
 - `CORTEXDB_ENGINE_ID`, `TINYHUMANS_ENGINE_ID`, `CORTEX_API_ENDPOINT`,
   `TINYHUMANS_API_ENDPOINT`, `cortexdb_descriptor()`, `tinyhumans_descriptor()`
@@ -62,6 +63,7 @@ cortex/
 ├── engine/         CortexEngine and one file per operation:
 │                   store, list, fetch, recall, forget, items (get), scopes, cursor
 ├── envelope/       the v2 event envelope, scope paths, lookup labels, rebuild
+├── tenancy/       CortexTenancy, TenantScope, and the scope root they fix
 ├── log/            the event log: write, read (list, scopes, recall, answer),
 │                   visibility waits, forget
 ├── transport/      HttpClient: timeouts, retries, byte caps, failure mapping,
@@ -80,7 +82,13 @@ app:tinymemory/agent:researcher/app:{documents,conversations,learnings} an agent
 app:tinymemory/team:acme/agent:writer/app:learnings                     a team member
 ```
 
-The hosted backend also re-roots every scope under the caller's tenant.
+A direct engine declares its tenancy and is refused without one:
+`single_user` keeps the layout above, and a tenant scope such as
+`org:acme/user:alice` puts every scope under it
+(`org:acme/user:alice/app:tinymemory/...`); a reported scope that does not
+start with the engine's root is another tenant's and is never read (see
+`tenancy/` and [`cortex.md`](../../../../docs/architecture/cortex.md#tenancy)).
+The hosted backend re-roots every scope under the caller's tenant itself.
 `MetaFilter.kinds` and `MetaFilter.reach` pick the scopes read: a reach's own
 node and inherited ancestors are known; a subtree reach or an unscoped read
 discovers the nodes below from the registered scopes (`v1/scopes/list`,

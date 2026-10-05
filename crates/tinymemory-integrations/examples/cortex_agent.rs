@@ -21,7 +21,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use tinymemory_api::{ForgetTarget, MemoryEngine, MemoryMeta, Role, Turn};
 use tinymemory_integrations::brain::brain_document;
-use tinymemory_integrations::cortex::{CortexCredential, CortexEngine};
+use tinymemory_integrations::cortex::{CortexCredential, CortexEngine, CortexTenancy};
 use tinymemory_integrations::documents::{
     ConverterChain, NativeConverter, OfficeConverter, RawDocument,
 };
@@ -60,8 +60,11 @@ async fn main() -> Result<(), Error> {
         return Ok(());
     };
     let key = std::env::var("CORTEX_DB_KEY").unwrap_or_else(|_| "tinymemory-cortex-test".into());
-    let engine: Arc<dyn MemoryEngine> =
-        Arc::new(CortexEngine::direct(&url, CortexCredential::api_key(key))?);
+    let engine: Arc<dyn MemoryEngine> = Arc::new(CortexEngine::direct(
+        &url,
+        CortexCredential::api_key(key),
+        CortexTenancy::SingleUser,
+    )?);
     println!(
         "engine: {} at {url} ({:?})",
         engine.descriptor().id,

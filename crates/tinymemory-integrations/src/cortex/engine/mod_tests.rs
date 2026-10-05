@@ -246,10 +246,55 @@ async fn a_pack_without_a_pack_id_or_answer_text_is_an_engine_error() {
 }
 
 #[test]
+fn a_direct_engine_without_a_tenancy_is_refused() {
+    let error = CortexEngine::new(
+        CortexWire::Direct,
+        "https://db.example",
+        CortexCredential::api_key("ctx_shared"),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(&error, Error::Config(why) if why.contains("tenancy")),
+        "{error:?}"
+    );
+    assert!(!error.to_string().contains("ctx_shared"));
+}
+
+#[test]
+fn a_hosted_engine_with_a_tenancy_is_refused() {
+    for tenancy in [
+        CortexTenancy::SingleUser,
+        CortexTenancy::pinned("user:alice").unwrap(),
+    ] {
+        let error = CortexEngine::new(
+            CortexWire::TinyHumans,
+            "https://api.example",
+            CortexCredential::api_key("tiny_live_x"),
+            Some(tenancy),
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::Config(_)), "{error:?}");
+    }
+}
+
+#[test]
+fn debug_shows_a_pinned_root() {
+    let engine = CortexEngine::direct(
+        "https://db.example",
+        CortexCredential::api_key("ctx_secret"),
+        CortexTenancy::pinned("org:acme/user:alice").unwrap(),
+    )
+    .unwrap();
+    assert!(format!("{engine:?}").contains("org:acme/user:alice/app:tinymemory"));
+}
+
+#[test]
 fn debug_names_the_engine_but_never_the_credential() {
     let engine = CortexEngine::direct(
         "https://db.example",
         CortexCredential::api_key("ctx_secret"),
+        CortexTenancy::SingleUser,
     )
     .unwrap();
     let rendered = format!("{engine:?}");

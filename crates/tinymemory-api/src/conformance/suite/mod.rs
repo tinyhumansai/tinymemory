@@ -34,11 +34,15 @@
 //!     answered as the descriptor's `consolidation` promises.
 //!
 //! Finally the run's items are forgotten by filter and must be gone.
+//!
+//! [`run_isolation`] is a separate check over two engines: two users of one
+//! backing store, neither of which may reach the other (see `isolation`).
 
 mod bulk;
 mod checks;
 mod explore;
 mod fixtures;
+mod isolation;
 mod lifecycle;
 mod namespaces;
 
@@ -49,6 +53,7 @@ use crate::{Hit, ListRequest, MemoryEngine, MetaFilter};
 
 use crate::conformance::error::{Error, Result};
 use fixtures::Run;
+pub use isolation::run_isolation;
 
 /// Most pages one listing may take before the suite calls the cursor endless.
 const MAX_PAGES: usize = 10_000;

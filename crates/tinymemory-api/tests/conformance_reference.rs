@@ -302,3 +302,32 @@ async fn an_engine_without_consolidation_passes_by_refusing_it() {
     run(&engine).await.expect("refusing consolidation conforms");
     assert!(engine.inner.is_empty());
 }
+
+#[tokio::test]
+async fn two_users_on_separate_stores_are_isolated_and_cleaned_up() {
+    let a = ReferenceEngine::new();
+    let b = ReferenceEngine::new();
+    tinymemory_api::conformance::run_isolation(&a, &b)
+        .await
+        .expect("separate stores are isolated");
+    assert!(a.is_empty() && b.is_empty());
+}
+
+#[tokio::test]
+async fn one_store_shared_by_two_users_is_caught() {
+    let shared = ReferenceEngine::new();
+    let error = tinymemory_api::conformance::run_isolation(&shared, &shared)
+        .await
+        .expect_err("a shared store must not pass as isolated");
+    assert!(
+        matches!(
+            &error,
+            Error::Check {
+                check: "isolation",
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert!(shared.is_empty(), "the check cleans up after a failure");
+}

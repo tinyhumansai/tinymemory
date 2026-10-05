@@ -12,11 +12,18 @@
 //!
 //! [engines.cortexdb]
 //! endpoint = "https://cortex.example.com"
+//! tenancy = "org:acme/user:alice"   # or "single_user"
 //! ```
 //!
 //! `engines` is optional, an engine with no entry uses its defaults, and a
 //! blank or absent `endpoint` means the engine's default endpoint. Unknown
 //! fields are ignored when reading.
+//!
+//! `tenancy` has no default. The `cortexdb` engine refuses to build without
+//! one, so a deployment that forgot to say whose memory a shared key holds
+//! fails at startup instead of writing every user into one scope tree (see
+//! [`crate::cortex::CortexTenancy`]). The `tinyhumans` engine refuses one:
+//! its backend pins the tenant.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -77,6 +84,11 @@ pub struct EngineSettings {
     /// `Authorization` and the other headers it sets itself.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
+    /// Whose memory the engine holds: `single_user` or a tenant scope such
+    /// as `org:acme/user:alice`. Required by `cortexdb`, refused by
+    /// `tinyhumans` (see the module docs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenancy: Option<crate::cortex::CortexTenancy>,
 }
 
 #[cfg(test)]

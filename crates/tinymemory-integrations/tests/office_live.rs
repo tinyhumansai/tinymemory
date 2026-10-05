@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use tinymemory_api::{
     ItemKind, ListRequest, MemoryEngine, MemoryMeta, MetaFilter, SourceKind, SourceRef,
 };
-use tinymemory_integrations::cortex::{CortexCredential, CortexEngine};
+use tinymemory_integrations::cortex::{CortexCredential, CortexEngine, CortexTenancy};
 use tinymemory_integrations::documents::{
     ConverterChain, OfficeConverter, RawDocument, document_item,
 };
@@ -40,7 +40,12 @@ async fn office_document_converts_and_round_trips_through_live_cortexdb() {
         return;
     };
     let key = std::env::var("TINYMEMORY_TEST_CORTEX_KEY").unwrap_or_else(|_| DEFAULT_KEY.into());
-    let engine = CortexEngine::direct(&url, CortexCredential::api_key(key)).expect("live engine");
+    let engine = CortexEngine::direct(
+        &url,
+        CortexCredential::api_key(key),
+        CortexTenancy::SingleUser,
+    )
+    .expect("live engine");
     assert!(engine.health().await.is_serving(), "CortexDB is serving");
 
     let workspace = format!("office-live-{}", std::process::id());

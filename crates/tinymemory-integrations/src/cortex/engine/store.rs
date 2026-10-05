@@ -54,7 +54,11 @@ impl CortexEngine {
         let mut by_scope: BTreeMap<KindScope, Vec<String>> = BTreeMap::new();
         for (item, id) in items.iter().zip(&ids) {
             by_scope
-                .entry(KindScope::new(item.meta().namespace.clone(), item.kind()))
+                .entry(KindScope::new(
+                    &self.root,
+                    item.meta().namespace.clone(),
+                    item.kind(),
+                ))
                 .or_default()
                 .push(id.clone());
         }
@@ -79,7 +83,7 @@ impl CortexEngine {
                     if present.is_some_and(|present| present.contains(&turn)) {
                         continue;
                     }
-                    requests.push(envelope.request(&envelope.encode()?));
+                    requests.push(envelope.request(&self.root, &envelope.encode()?));
                 }
             }
             let replayed = requests.is_empty();

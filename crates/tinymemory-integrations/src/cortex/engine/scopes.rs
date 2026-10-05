@@ -11,7 +11,8 @@
 //!   was written to lists empty.
 //! - **A subtree reach, or no reach at all,** needs the nodes below, which
 //!   only the engine knows: they are discovered once per call from the
-//!   registered scopes under the TinyMemory root. The root's own kind scopes
+//!   registered scopes under the engine's TinyMemory root, and a reported
+//!   scope outside that root (another tenant's) is never read. The root's own kind scopes
 //!   are always read.
 //!
 //! Reads are always exact (`view=local`): server-side traversal is never
@@ -23,8 +24,9 @@ use tinymemory_api::{ItemKind, MetaFilter, Namespace, Reach};
 
 use super::CortexEngine;
 use super::items::admitted;
-use crate::cortex::envelope::{ROOT_SCOPE, parse_scope, scope_path};
+use crate::cortex::envelope::{parse_scope, scope_path};
 use crate::cortex::error::Result;
+use crate::cortex::tenancy::ScopeRoot;
 
 /// One scope to read: a kind at a namespace node.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -40,29 +42,30 @@ pub(crate) struct KindScope {
 }
 
 impl KindScope {
-    /// The scope of `kind` at `namespace`.
-    pub(crate) fn new(namespace: Namespace, kind: ItemKind) -> Self {
+    /// The scope of `kind` at `namespace`, under `root`.
+    pub(crate) fn new(root: &ScopeRoot, namespace: Namespace, kind: ItemKind) -> Self {
         Self {
             order: ItemKind::ALL
                 .iter()
                 .position(|k| *k == kind)
                 .unwrap_or_default(),
-            path: scope_path(&namespace, kind),
+            path: scope_path(root, &namespace, kind),
             namespace,
             kind,
         }
     }
 }
 
-/// The scopes `reach` reads exactly (no discovery): its nodes for each kind.
-pub(crate) fn known(reach: &Reach, kinds: &[ItemKind]) -> Vec<KindScope> {
+/// The scopes `reach` reads exactly (no discovery) under `root`: its nodes
+/// for each kind.
+pub(crate) fn known(root: &ScopeRoot, reach: &Reach, kinds: &[ItemKind]) -> Vec<KindScope> {
     let mut scopes: Vec<KindScope> = reach
         .nodes()
         .into_iter()
         .flat_map(|node| {
             kinds
                 .iter()
-                .map(move |kind| KindScope::new(node.clone(), *kind))
+                .map(move |kind| KindScope::new(root, node.clone(), *kind))
         })
         .collect();
     scopes.sort();
@@ -86,7 +89,7 @@ impl CortexEngine {
         let Some(base) = reach.filter(|_| !needs_discovery(reach)) else {
             return self.discovered(reach, &kinds).await;
         };
-        Ok(known(base, &kinds))
+        Ok(known(&self.root, base, &kinds))
     }
 
     /// The scopes of `kinds` in `reach` that CortexDB has registered — only
@@ -95,12 +98,12 @@ impl CortexEngine {
     /// wasted model time.
     pub(super) async fn held(&self, reach: &Reach, kinds: &[ItemKind]) -> Result<Vec<KindScope>> {
         let mut found = BTreeSet::new();
-        for path in self.log.scopes(ROOT_SCOPE).await? {
-            let Some((namespace, kind)) = parse_scope(&path) else {
+        for path in self.log.scopes(self.root.path()).await? {
+            let Some((namespace, kind)) = parse_scope(&self.root, &path) else {
                 continue;
             };
             if reach.admits(&namespace) && kinds.contains(&kind) {
-                found.insert(KindScope::new(namespace, kind));
+                found.insert(KindScope::new(&self.root, namespace, kind));
             }
         }
         Ok(found.into_iter().collect())
@@ -113,26 +116,26 @@ impl CortexEngine {
         kinds: &[ItemKind],
     ) -> Result<Vec<KindScope>> {
         let mut found: BTreeSet<KindScope> = match reach {
-            Some(reach) => known(reach, kinds).into_iter().collect(),
-            None => known(&Reach::exact(Namespace::ROOT), kinds)
+            Some(reach) => known(&self.root, reach, kinds).into_iter().collect(),
+            None => known(&self.root, &Reach::exact(Namespace::ROOT), kinds)
                 .into_iter()
                 .collect(),
         };
         let prefix = match reach {
             Some(reach) if !reach.at.is_root() => {
-                let mut path = scope_path(&reach.at, ItemKind::Document);
+                let mut path = scope_path(&self.root, &reach.at, ItemKind::Document);
                 path.truncate(path.rfind('/').unwrap_or(path.len()));
                 path
             }
-            _ => ROOT_SCOPE.to_string(),
+            _ => self.root.path().to_string(),
         };
         for path in self.log.scopes(&prefix).await? {
-            let Some((namespace, kind)) = parse_scope(&path) else {
+            let Some((namespace, kind)) = parse_scope(&self.root, &path) else {
                 continue;
             };
             let in_reach = reach.is_none_or(|reach| reach.admits(&namespace));
             if in_reach && kinds.contains(&kind) {
-                found.insert(KindScope::new(namespace, kind));
+                found.insert(KindScope::new(&self.root, namespace, kind));
             }
         }
         Ok(found.into_iter().collect())

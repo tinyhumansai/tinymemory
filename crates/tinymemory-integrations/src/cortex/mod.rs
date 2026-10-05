@@ -21,7 +21,10 @@
 //!
 //! Items live in one scope per kind under the TinyMemory root:
 //! `app:tinymemory/app:documents`, `app:tinymemory/app:conversations`,
-//! `app:tinymemory/app:learnings`. A document or learning is one event; a
+//! `app:tinymemory/app:learnings`. A direct engine declares whose memory it
+//! holds ([`CortexTenancy`]); one pinned to a tenant puts the pin first
+//! (`org:acme/user:alice/app:tinymemory/app:documents`) and never reads or
+//! writes outside it. A document or learning is one event; a
 //! conversation is one event per turn. Each event's text is a JSON envelope
 //! (`"v": 2`) carrying the item id ([`tinymemory_api::StoreItem::fingerprint`]),
 //! kind, text and full metadata, and each event carries lookup labels (digests
@@ -36,10 +39,14 @@
 //! ```no_run
 //! use std::sync::Arc;
 //! use tinymemory_api::{MemoryEngine, MemoryMeta, SourceKind, StoreItem};
-//! use tinymemory_integrations::cortex::{CortexCredential, CortexEngine, StaticBearer, CORTEX_API_ENDPOINT};
+//! use tinymemory_integrations::cortex::{CortexCredential, CortexEngine, CortexTenancy, StaticBearer, CORTEX_API_ENDPOINT};
 //!
 //! # async fn demo() -> tinymemory_integrations::cortex::Result<()> {
-//! let direct = CortexEngine::direct(CORTEX_API_ENDPOINT, CortexCredential::api_key("ctx_..."))?;
+//! let direct = CortexEngine::direct(
+//!     CORTEX_API_ENDPOINT,
+//!     CortexCredential::api_key("ctx_..."),
+//!     CortexTenancy::SingleUser,
+//! )?;
 //! let hosted = CortexEngine::tinyhumans(
 //!     tinymemory_integrations::cortex::TINYHUMANS_API_ENDPOINT,
 //!     Arc::new(StaticBearer::new("tiny_live_...")),
@@ -59,6 +66,7 @@ mod engine;
 mod envelope;
 mod error;
 mod log;
+mod tenancy;
 mod transport;
 
 #[cfg(test)]
@@ -79,3 +87,4 @@ pub use descriptor::{
 };
 pub use engine::CortexEngine;
 pub use error::{Error, Result, error_code, is_insufficient_credits};
+pub use tenancy::{CortexTenancy, SINGLE_USER, TenantScope};

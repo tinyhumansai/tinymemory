@@ -1,7 +1,12 @@
 //! Tests for the v2 envelope: layout, round trip, and foreign events.
 
 use super::*;
+use crate::cortex::tenancy::CortexTenancy;
 use tinymemory_api::{SourceKind, Turn};
+
+fn single_user() -> ScopeRoot {
+    ScopeRoot::direct(&CortexTenancy::SingleUser)
+}
 
 fn meta() -> MemoryMeta {
     let mut meta = MemoryMeta::from_source(SourceKind::Folder, Some("notes".into()));
@@ -72,7 +77,7 @@ fn a_conversation_is_one_event_per_turn_in_order() {
         .map(|e| e.turn.as_ref().map(|t| (t.index, t.count)))
         .collect();
     assert_eq!(turns, vec![Some((0, 2)), Some((1, 2))]);
-    let request = envelopes[1].request("x");
+    let request = envelopes[1].request(&single_user(), "x");
     assert_eq!(request["content"]["role"], "assistant");
     assert_eq!(request["scope"], "app:tinymemory/app:conversations");
     assert_eq!(request["modality"], "conversation");
@@ -116,7 +121,7 @@ fn observed_at_and_labels_reach_the_event_context() {
     meta.observed_at = Some("2026-01-02T03:04:05Z".parse().unwrap());
     let item = StoreItem::document("text", meta);
     let envelope = &Envelope::for_item(&item, "id").unwrap()[0];
-    let request = envelope.request("payload");
+    let request = envelope.request(&single_user(), "payload");
     assert_eq!(
         request["context"]["observed_at"],
         "2026-01-02T03:04:05+00:00"
@@ -125,35 +130,41 @@ fn observed_at_and_labels_reach_the_event_context() {
     assert_eq!(request["scope"], "app:tinymemory/app:documents");
     assert_ne!(
         request["idempotency_key"],
-        envelope.request("payload")["idempotency_key"],
+        envelope.request(&single_user(), "payload")["idempotency_key"],
         "every write mints a fresh key"
     );
 }
 
 #[test]
 fn scopes_nest_kinds_under_their_namespace_node() {
+    let root = ScopeRoot::direct(&CortexTenancy::SingleUser);
     let writer: Namespace = "team:acme/agent:writer".parse().unwrap();
     assert_eq!(
-        scope_path(&Namespace::ROOT, ItemKind::Learning),
+        scope_path(&root, &Namespace::ROOT, ItemKind::Learning),
         "app:tinymemory/app:learnings",
         "the root keeps the original layout"
     );
-    let path = scope_path(&writer, ItemKind::Conversation);
+    let path = scope_path(&root, &writer, ItemKind::Conversation);
     assert_eq!(
         path,
         "app:tinymemory/team:acme/agent:writer/app:conversations"
     );
     assert_eq!(
-        parse_scope(&path),
+        parse_scope(&root, &path),
         Some((writer.clone(), ItemKind::Conversation))
     );
     assert_eq!(
-        parse_scope(&format!("org:t1/{path}")),
-        Some((writer, ItemKind::Conversation)),
-        "a tenant prefix is skipped"
+        parse_scope(&root, &format!("org:t1/{path}")),
+        None,
+        "a direct engine reads only scopes under its own root"
     );
     assert_eq!(
-        parse_scope("app:tinymemory/app:documents"),
+        parse_scope(&ScopeRoot::hosted(), &format!("org:t1/{path}")),
+        Some((writer, ItemKind::Conversation)),
+        "the hosted backend's tenant prefix is skipped"
+    );
+    assert_eq!(
+        parse_scope(&root, "app:tinymemory/app:documents"),
         Some((Namespace::ROOT, ItemKind::Document))
     );
     for other in [
@@ -162,16 +173,61 @@ fn scopes_nest_kinds_under_their_namespace_node() {
         "app:tinymemory/agent:x",
         "app:tinymemory/robot:x/app:documents",
     ] {
-        assert_eq!(parse_scope(other), None, "{other}");
+        assert_eq!(parse_scope(&root, other), None, "{other}");
+    }
+}
+
+#[test]
+fn a_pinned_engine_writes_and_reads_only_under_its_pin() {
+    let alice = ScopeRoot::direct(&CortexTenancy::pinned("org:acme/user:alice").unwrap());
+    let bob = ScopeRoot::direct(&CortexTenancy::pinned("org:acme/user:bob").unwrap());
+    let writer: Namespace = "agent:writer".parse().unwrap();
+    let path = scope_path(&alice, &writer, ItemKind::Learning);
+    assert_eq!(
+        path,
+        "org:acme/user:alice/app:tinymemory/agent:writer/app:learnings"
+    );
+    assert_eq!(
+        parse_scope(&alice, &path),
+        Some((writer, ItemKind::Learning))
+    );
+    assert_eq!(parse_scope(&bob, &path), None, "bob never reads alice");
+}
+
+#[test]
+fn a_namespace_naming_another_tenant_lands_inside_the_callers_own() {
+    let alice = ScopeRoot::direct(&CortexTenancy::pinned("org:acme/user:alice").unwrap());
+    // A namespace that names another user is only a node in alice's tree.
+    let bob: Namespace = "user:bob".parse().unwrap();
+    assert_eq!(
+        scope_path(&alice, &bob, ItemKind::Document),
+        "org:acme/user:alice/app:tinymemory/user:bob/app:documents"
+    );
+    // Nothing else that could climb out is a namespace at all.
+    for escape in [
+        "..",
+        "user:..",
+        "user:../user:bob",
+        "/org:acme/user:bob",
+        "org:acme",
+        "org:acme/user:bob",
+        "oc:u-bob",
+        "oc:u-bob/user:bob",
+        "app:tinymemory",
+        "user:bob/../..",
+        "user:bob%2F..",
+    ] {
+        assert!(escape.parse::<Namespace>().is_err(), "{escape}");
     }
 }
 
 #[test]
 fn a_brain_source_is_a_cortex_source_scope() {
+    let root = ScopeRoot::direct(&CortexTenancy::SingleUser);
     let pdf: Namespace = "team:acme/source:pdf".parse().unwrap();
-    let path = scope_path(&pdf, ItemKind::Document);
+    let path = scope_path(&root, &pdf, ItemKind::Document);
     assert_eq!(path, "app:tinymemory/team:acme/source:pdf/app:documents");
-    assert_eq!(parse_scope(&path), Some((pdf, ItemKind::Document)));
+    assert_eq!(parse_scope(&root, &path), Some((pdf, ItemKind::Document)));
 }
 
 #[test]
@@ -183,7 +239,7 @@ fn an_item_is_written_to_its_namespace_scope() {
     let item = StoreItem::document("notes", meta);
     let id = item.fingerprint();
     let envelope = Envelope::for_item(&item, &id).unwrap().remove(0);
-    let request = envelope.request(&envelope.encode().unwrap());
+    let request = envelope.request(&single_user(), &envelope.encode().unwrap());
     assert_eq!(
         request["scope"],
         "app:tinymemory/agent:researcher/app:documents"

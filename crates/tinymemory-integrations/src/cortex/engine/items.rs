@@ -102,7 +102,7 @@ impl CortexEngine {
         }
         let mut out = HashMap::new();
         for (namespace, ids) in by_node {
-            let scope = KindScope::new(namespace.clone(), ItemKind::Conversation);
+            let scope = KindScope::new(&self.root, namespace.clone(), ItemKind::Conversation);
             for (id, events) in self.item_events(&scope, &ids).await? {
                 let envelopes: Vec<Envelope> = events.into_iter().map(|d| d.envelope).collect();
                 if let Some(item) = rebuild(&envelopes) {

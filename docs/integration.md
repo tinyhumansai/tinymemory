@@ -57,12 +57,25 @@ that needs nothing.
 ```rust
 use std::sync::Arc;
 use tinymemory_api::MemoryEngine;
-use tinymemory_integrations::cortex::{CortexCredential, CortexEngine};
+use tinymemory_integrations::cortex::{CortexCredential, CortexEngine, CortexTenancy};
 
-// A CortexDB server, direct.
-let engine: Arc<dyn MemoryEngine> =
-    Arc::new(CortexEngine::direct("https://cortex.example.com", CortexCredential::api_key(key))?);
+// A CortexDB server, direct, on one person's own key.
+let engine: Arc<dyn MemoryEngine> = Arc::new(CortexEngine::direct(
+    "https://cortex.example.com",
+    CortexCredential::api_key(key),
+    CortexTenancy::SingleUser,
+)?);
 ```
+
+A direct engine must declare whose memory it holds, and is refused without
+one. `CortexTenancy::SingleUser` says the key is one person's. A host that
+serves several people from one key pins each person's engine to their own
+CortexDB scope instead, `CortexTenancy::pinned("org:acme/user:alice")?`, and
+everything that engine reads, writes, discovers or forgets stays under
+`org:acme/user:alice/`. A pin keeps hosts that go through TinyMemory apart;
+anyone holding the key itself can still name any scope, so people who must be
+kept apart from each other's *clients* need a key each, or the `tinyhumans`
+engine, whose backend pins the tenant from the caller's credential.
 
 Or build it from configuration, which keeps the engine choice out of code:
 
@@ -71,7 +84,10 @@ use tinymemory_integrations::{EngineCredential, MemoryConfig};
 
 let config: MemoryConfig = serde_json::from_value(serde_json::json!({
     "engine": "cortexdb",                       // or "tinyhumans"
-    "engines": { "cortexdb": { "endpoint": "https://cortex.example.com" } }
+    "engines": { "cortexdb": {
+        "endpoint": "https://cortex.example.com",
+        "tenancy": "single_user"                // or "org:acme/user:alice"
+    } }
 }))?;
 let engine = config.build(EngineCredential::Static(key))?;
 ```

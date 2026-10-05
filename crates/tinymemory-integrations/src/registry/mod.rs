@@ -8,8 +8,9 @@
 //! | `tinyhumans` | CortexDB behind the TinyHumans backend `/memory/*` | defaults to `api.tinyhumans.ai` | session JWT or `tiny_live_` key, usually dynamic |
 //!
 //! [`build_engine`] refuses an unknown id, a missing required endpoint or
-//! credential, and a credentialed cleartext endpoint that is not loopback,
-//! all as [`Error::Config`]. Messages never carry the credential.
+//! credential, a credentialed cleartext endpoint that is not loopback, and a
+//! `cortexdb` engine with no tenancy (or a `tinyhumans` one with one), all as
+//! [`Error::Config`]. Messages never carry the credential.
 
 use std::sync::Arc;
 
@@ -63,8 +64,9 @@ pub fn list_engines() -> Vec<EngineDescriptor> {
 /// # Errors
 ///
 /// [`Error::Config`] for an unknown id, a missing endpoint or credential, an
-/// endpoint that is not an HTTP(S) URL, or a credentialed cleartext
-/// (`http://`) endpoint that is not loopback.
+/// endpoint that is not an HTTP(S) URL, a credentialed cleartext
+/// (`http://`) endpoint that is not loopback, a `cortexdb` engine without a
+/// tenancy, or a `tinyhumans` engine with one.
 pub fn build_engine(
     id: &str,
     settings: &EngineSettings,
@@ -93,8 +95,8 @@ pub fn build_engine(
             )));
         }
     };
-    let engine =
-        CortexEngine::new(wire, endpoint, credential)?.with_default_headers(&settings.headers)?;
+    let engine = CortexEngine::new(wire, endpoint, credential, settings.tenancy.clone())?
+        .with_default_headers(&settings.headers)?;
     Ok(Arc::new(engine))
 }
 

@@ -5,10 +5,11 @@
 //! `scripts/cortexdb-live.sh` runs this whole file against that harness. The
 //! key defaults to the harness's (`TINYMEMORY_TEST_CORTEX_KEY`).
 //!
-//! Two passes: the shared conformance suite, then the three stores the host
-//! uses (a document, a conversation with a tool call, a learning) read back
-//! through `list`, `fetch` and `recall`, compiled into `context.md`, and
-//! forgotten.
+//! Three passes: the shared conformance suite; the isolation check between
+//! two tenants pinned under one key on the one server; then the three stores
+//! the host uses (a document, a conversation with a tool call, a learning)
+//! read back through `list`, `fetch` and `recall`, compiled into
+//! `context.md`, and forgotten.
 
 // The helpers outside `#[test]` fns fail the test by panicking, like the tests.
 #![allow(clippy::expect_used)]
@@ -20,7 +21,7 @@ use tinymemory_api::{
     MemoryMeta, MetaFilter, RecallRequest, Role, SourceKind, SourceRef, StoreItem, ToolCallRef,
     Turn,
 };
-use tinymemory_integrations::cortex::{CortexCredential, CortexEngine};
+use tinymemory_integrations::cortex::{CortexCredential, CortexEngine, CortexTenancy};
 use tinymemory_tools::context::{ContextSpec, compile};
 
 const DEFAULT_KEY: &str = "tinymemory-cortex-test";
@@ -30,9 +31,17 @@ const DEFAULT_KEY: &str = "tinymemory-cortex-test";
 const VISIBILITY: Duration = Duration::from_secs(60);
 
 fn live_engine() -> Option<CortexEngine> {
+    live_tenant(CortexTenancy::SingleUser)
+}
+
+/// An engine on the live server holding `tenancy`, on the harness's one key.
+fn live_tenant(tenancy: CortexTenancy) -> Option<CortexEngine> {
     let url = std::env::var("TINYMEMORY_LIVE_CORTEXDB_URL").ok()?;
     let key = std::env::var("TINYMEMORY_TEST_CORTEX_KEY").unwrap_or_else(|_| DEFAULT_KEY.into());
-    Some(CortexEngine::direct(&url, CortexCredential::api_key(key)).expect("a valid live endpoint"))
+    Some(
+        CortexEngine::direct(&url, CortexCredential::api_key(key), tenancy)
+            .expect("a valid live endpoint"),
+    )
 }
 
 fn run_id() -> String {
@@ -79,6 +88,50 @@ async fn the_live_server_upholds_the_contract() {
     tinymemory_api::conformance::run(&engine)
         .await
         .expect("the live CortexDB conforms");
+}
+
+#[tokio::test]
+async fn two_tenants_on_one_live_key_are_isolated() {
+    // Fresh pins per run: a pin is a scope, and the server keeps scopes.
+    let org = format!("org:{}", run_id());
+    let pin =
+        |user: &str| CortexTenancy::pinned(&format!("{org}/user:{user}")).expect("a valid pin");
+    let Some(alice) = live_tenant(pin("alice")) else {
+        eprintln!("TINYMEMORY_LIVE_CORTEXDB_URL unset; skipping");
+        return;
+    };
+    let bob = live_tenant(pin("bob")).expect("the same live server");
+    tinymemory_api::conformance::run_isolation(&alice, &bob)
+        .await
+        .expect("alice cannot reach bob's memory, nor bob alice's");
+    let above = live_tenant(CortexTenancy::pinned(&org).expect("a valid pin"))
+        .expect("the same live server");
+    tinymemory_api::conformance::run_isolation(&above, &alice)
+        .await
+        .expect("a tenant pinned at the shared ancestor cannot descend into alice");
+}
+
+#[tokio::test]
+async fn two_single_user_engines_on_one_live_key_share_everything() {
+    // What `single_user` asserts away: two people on one key share one tree,
+    // and the check must catch it on the real server, not only the double.
+    let (Some(first), Some(second)) = (live_engine(), live_engine()) else {
+        eprintln!("TINYMEMORY_LIVE_CORTEXDB_URL unset; skipping");
+        return;
+    };
+    let error = tinymemory_api::conformance::run_isolation(&first, &second)
+        .await
+        .expect_err("one tree shared by two users is not isolated");
+    assert!(
+        matches!(
+            &error,
+            tinymemory_api::conformance::Error::Check {
+                check: "isolation",
+                ..
+            }
+        ),
+        "{error:?}"
+    );
 }
 
 #[tokio::test]

@@ -36,6 +36,7 @@ use crate::cortex::credential::{BearerSource, CortexCredential};
 use crate::cortex::descriptor::{CortexWire, Route};
 use crate::cortex::error::{Error, Result};
 use crate::cortex::log::Log;
+use crate::cortex::tenancy::{CortexTenancy, ScopeRoot};
 use crate::cortex::transport::{HttpClient, health_reason, urlencode};
 
 /// The scope prefix the hosted health probe lists under. The memory API
@@ -53,6 +54,8 @@ const HEALTH_PROBE_SCOPE: &str = "tmh:probe";
 pub struct CortexEngine {
     descriptor: EngineDescriptor,
     log: Log,
+    /// Where every scope this engine names sits (see `tenancy`).
+    root: ScopeRoot,
 }
 
 impl std::fmt::Debug for CortexEngine {
@@ -60,33 +63,71 @@ impl std::fmt::Debug for CortexEngine {
         f.debug_struct("CortexEngine")
             .field("id", &self.descriptor.id)
             .field("endpoint", &self.log.client.origin())
+            .field("root", &self.root.path())
             .finish_non_exhaustive()
     }
 }
 
 impl CortexEngine {
-    /// An engine on `wire` at `endpoint`, authenticating with `credential`.
+    /// An engine on `wire` at `endpoint`, authenticating with `credential`,
+    /// holding the memory `tenancy` declares (see [`CortexTenancy`]).
+    ///
+    /// The direct wire must declare its tenancy: without one, every caller
+    /// sharing the credential would share one scope tree, so the engine is
+    /// refused rather than built. The hosted wire must not: the backend pins
+    /// the tenant from the caller's credential.
     ///
     /// # Errors
     ///
     /// [`Error::Config`] for an invalid or non-HTTP(S) endpoint, a cleartext
     /// endpoint that is not loopback (the credential would cross the network
-    /// in the clear), or a blank static credential.
-    pub fn new(wire: CortexWire, endpoint: &str, credential: CortexCredential) -> Result<Self> {
+    /// in the clear), a blank static credential, a direct engine without a
+    /// tenancy, or a hosted engine with one.
+    pub fn new(
+        wire: CortexWire,
+        endpoint: &str,
+        credential: CortexCredential,
+        tenancy: Option<CortexTenancy>,
+    ) -> Result<Self> {
+        let root = match (wire, tenancy) {
+            (CortexWire::Direct, Some(tenancy)) => ScopeRoot::direct(&tenancy),
+            (CortexWire::Direct, None) => {
+                return Err(Error::Config(
+                    "a direct CortexDB engine needs a tenancy: `single_user` for one person's \
+                     credential, or a tenant scope such as `org:acme/user:alice` to pin every \
+                     scope under"
+                        .to_string(),
+                ));
+            }
+            (CortexWire::TinyHumans, None) => ScopeRoot::hosted(),
+            (CortexWire::TinyHumans, Some(_)) => {
+                return Err(Error::Config(
+                    "the TinyHumans memory engine takes no tenancy: the backend pins the tenant \
+                     from the caller's credential"
+                        .to_string(),
+                ));
+            }
+        };
         Ok(Self {
             descriptor: wire.descriptor(),
             log: Log::new(HttpClient::new(wire, endpoint, credential)?),
+            root,
         })
     }
 
     /// CortexDB's own `/v1/*` API at `endpoint` (for example
-    /// [`crate::cortex::CORTEX_API_ENDPOINT`]), registered as `cortexdb`.
+    /// [`crate::cortex::CORTEX_API_ENDPOINT`]), registered as `cortexdb`,
+    /// holding the memory `tenancy` declares.
     ///
     /// # Errors
     ///
     /// As [`CortexEngine::new`].
-    pub fn direct(endpoint: &str, credential: CortexCredential) -> Result<Self> {
-        Self::new(CortexWire::Direct, endpoint, credential)
+    pub fn direct(
+        endpoint: &str,
+        credential: CortexCredential,
+        tenancy: CortexTenancy,
+    ) -> Result<Self> {
+        Self::new(CortexWire::Direct, endpoint, credential, Some(tenancy))
     }
 
     /// CortexDB behind the TinyHumans backend at `base_url` (for example
@@ -102,6 +143,7 @@ impl CortexEngine {
             CortexWire::TinyHumans,
             base_url,
             CortexCredential::Dynamic(bearer),
+            None,
         )
     }
 
