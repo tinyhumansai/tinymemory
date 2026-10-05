@@ -3,20 +3,11 @@
 use async_trait::async_trait;
 
 use super::*;
-use crate::cortex::CortexTenancy;
 
 fn settings(endpoint: Option<&str>) -> EngineSettings {
     EngineSettings {
         endpoint: endpoint.map(str::to_string),
         ..EngineSettings::default()
-    }
-}
-
-/// Settings for the `cortexdb` engine, which must declare its tenancy.
-fn direct_settings(endpoint: Option<&str>) -> EngineSettings {
-    EngineSettings {
-        tenancy: Some(CortexTenancy::SingleUser),
-        ..settings(endpoint)
     }
 }
 
@@ -65,7 +56,7 @@ fn a_missing_credential_is_refused() {
         EngineCredential::None,
         EngineCredential::Static("  ".into()),
     ] {
-        let message = config_error(build_engine("cortexdb", &direct_settings(None), credential));
+        let message = config_error(build_engine("cortexdb", &settings(None), credential));
         assert!(message.contains("needs a credential"), "{message}");
     }
 }
@@ -74,7 +65,7 @@ fn a_missing_credential_is_refused() {
 fn credentialed_cleartext_is_refused_off_loopback_only() {
     let message = config_error(build_engine(
         "cortexdb",
-        &direct_settings(Some("http://cortex.example.test")),
+        &settings(Some("http://cortex.example.test")),
         EngineCredential::Static("secret-key".into()),
     ));
     assert!(message.contains("https"));
@@ -87,7 +78,7 @@ fn credentialed_cleartext_is_refused_off_loopback_only() {
         assert!(
             build_engine(
                 "cortexdb",
-                &direct_settings(Some(loopback)),
+                &settings(Some(loopback)),
                 EngineCredential::Static("k".into())
             )
             .is_ok(),
@@ -115,7 +106,7 @@ fn a_non_http_endpoint_is_refused() {
 fn engines_build_with_default_endpoints_and_either_credential() {
     let cortex = build_engine(
         "cortexdb",
-        &direct_settings(None),
+        &settings(None),
         EngineCredential::Static("key".into()),
     )
     .unwrap();
@@ -136,7 +127,7 @@ fn engines_build_with_default_endpoints_and_either_credential() {
     assert!(static_hosted.descriptor().hosted);
     let dynamic_direct = build_engine(
         "cortexdb",
-        &direct_settings(Some("https://cortex.example.test")),
+        &settings(Some("https://cortex.example.test")),
         EngineCredential::Dynamic(Arc::new(Session)),
     )
     .unwrap();
@@ -155,7 +146,7 @@ fn credential_debug_never_shows_the_token() {
 
 #[test]
 fn fixed_headers_are_applied_and_a_credential_header_is_refused() {
-    let mut with_headers = direct_settings(Some("https://cortex.example.test"));
+    let mut with_headers = settings(Some("https://cortex.example.test"));
     with_headers
         .headers
         .insert("x-sdk-name".to_string(), "openhuman".to_string());
@@ -180,48 +171,4 @@ fn fixed_headers_are_applied_and_a_credential_header_is_refused() {
     .expect("a credential header is refused");
     assert!(matches!(refused, Error::Config(_)), "{refused:?}");
     assert!(!refused.to_string().contains("smuggled"));
-}
-
-#[test]
-fn a_direct_engine_without_a_tenancy_fails_closed() {
-    let message = config_error(build_engine(
-        "cortexdb",
-        &settings(Some("https://cortex.example.test")),
-        EngineCredential::Static("ctx_shared_key".into()),
-    ));
-    assert!(message.contains("tenancy"), "{message}");
-    assert!(!message.contains("ctx_shared_key"));
-}
-
-#[test]
-fn a_direct_engine_builds_single_user_or_pinned() {
-    for tenancy in ["single_user", "org:acme/user:alice"] {
-        let settings = EngineSettings {
-            tenancy: Some(tenancy.parse().unwrap()),
-            ..settings(Some("https://cortex.example.test"))
-        };
-        assert!(
-            build_engine(
-                "cortexdb",
-                &settings,
-                EngineCredential::Static("ctx_key".into())
-            )
-            .is_ok(),
-            "{tenancy}"
-        );
-    }
-}
-
-#[test]
-fn a_hosted_engine_with_a_tenancy_is_refused() {
-    let settings = EngineSettings {
-        tenancy: Some(CortexTenancy::SingleUser),
-        ..settings(Some("https://api.example.test"))
-    };
-    let message = config_error(build_engine(
-        "tinyhumans",
-        &settings,
-        EngineCredential::Dynamic(Arc::new(Session)),
-    ));
-    assert!(message.contains("backend pins the tenant"), "{message}");
 }

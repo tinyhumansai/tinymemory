@@ -50,9 +50,6 @@ curl --fail --silent "$url/v1/admin/ready" >/dev/null || {
 }
 echo "CortexDB $(curl --silent "$url/v1/admin/health") at $url"
 
-# One test at a time: on a freshly booted server, concurrent recalls lose
-# their pack before `v1/answer` reads it ("pack_id expired or unknown"), which
-# would fail a test for the server's sake rather than the engine's.
-TINYMEMORY_LIVE_CORTEXDB_URL="$url" cargo test -p tinymemory-integrations --test live_cortexdb -- --nocapture --test-threads=1
+TINYMEMORY_LIVE_CORTEXDB_URL="$url" cargo test -p tinymemory-integrations --test live_cortexdb -- --nocapture
 TINYMEMORY_LIVE_CORTEXDB_URL="$url" cargo test -p tinymemory-integrations --features documents-office --test office_live -- --nocapture
 TINYMEMORY_LIVE_CORTEXDB_URL="$url" cargo test -p tinymemory-integrations --features brain --test live_cortex_lifecycle -- --nocapture

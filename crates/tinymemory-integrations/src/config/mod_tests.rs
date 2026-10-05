@@ -17,7 +17,6 @@ fn the_selected_engine_settings_are_read_from_toml() {
 
         [engines.cortexdb]
         endpoint = "https://cortex.example.test"
-        tenancy = "org:acme/user:alice"
 
         [engines.tinyhumans]
         "#,
@@ -26,10 +25,6 @@ fn the_selected_engine_settings_are_read_from_toml() {
     assert_eq!(
         config.settings().endpoint.as_deref(),
         Some("https://cortex.example.test")
-    );
-    assert_eq!(
-        config.settings().tenancy,
-        Some(crate::cortex::CortexTenancy::pinned("org:acme/user:alice").unwrap())
     );
     let back: MemoryConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
     assert_eq!(back, config);
@@ -43,25 +38,6 @@ fn building_from_config_applies_the_registry_rules() {
     };
     assert!(matches!(
         config.build(EngineCredential::None),
-        Err(tinymemory_api::Error::Config(_))
-    ));
-}
-
-#[test]
-fn a_malformed_tenancy_is_refused_when_reading() {
-    for tenancy in ["shared", "user:..", "app:tinymemory", ""] {
-        let read = toml::from_str::<MemoryConfig>(&format!(
-            "engine = \"cortexdb\"\n[engines.cortexdb]\ntenancy = \"{tenancy}\"\n"
-        ));
-        assert!(read.is_err(), "{tenancy}");
-    }
-}
-
-#[test]
-fn a_cortexdb_config_without_a_tenancy_does_not_build() {
-    let config: MemoryConfig = toml::from_str("engine = \"cortexdb\"").unwrap();
-    assert!(matches!(
-        config.build(EngineCredential::Static("ctx_key".into())),
         Err(tinymemory_api::Error::Config(_))
     ));
 }

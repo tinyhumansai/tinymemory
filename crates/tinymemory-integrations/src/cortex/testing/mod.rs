@@ -22,7 +22,7 @@ pub(crate) use log::CortexLog;
 
 use tinymemory_api::{LearningKind, MemoryMeta, Role, SourceKind, StoreItem, Turn};
 
-use crate::cortex::{CortexCredential, CortexEngine, CortexTenancy, StaticBearer};
+use crate::cortex::{CortexCredential, CortexEngine, StaticBearer};
 
 /// The bearer the test engines send.
 pub(crate) const TEST_TOKEN: &str = "tiny_live_test";
@@ -145,15 +145,9 @@ pub(crate) async fn hosted_double() -> (String, Shared) {
 /// The visibility budget test engines wait.
 pub(crate) const TEST_VISIBILITY: Duration = Duration::from_secs(2);
 
-/// A single-user Direct engine on `endpoint` with fast test timing.
+/// A Direct engine on `endpoint` with fast test timing.
 pub(crate) fn direct_engine(endpoint: &str) -> CortexEngine {
-    tenant_engine(endpoint, CortexTenancy::SingleUser)
-}
-
-/// A Direct engine on `endpoint` holding `tenancy`, sharing the one test key
-/// with every other engine on the double, with fast test timing.
-pub(crate) fn tenant_engine(endpoint: &str, tenancy: CortexTenancy) -> CortexEngine {
-    CortexEngine::direct(endpoint, CortexCredential::api_key(TEST_TOKEN), tenancy)
+    CortexEngine::direct(endpoint, CortexCredential::api_key(TEST_TOKEN))
         .unwrap()
         .with_test_timing(TEST_VISIBILITY)
 }

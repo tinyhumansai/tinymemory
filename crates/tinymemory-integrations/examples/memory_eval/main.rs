@@ -60,7 +60,7 @@ use tinymemory_api::{
     ConsolidateRequest, ForgetTarget, ListRequest, MemoryEngine, MemoryMeta, Reach, Role,
     StoreItem, Turn,
 };
-use tinymemory_integrations::cortex::{CortexCredential, CortexEngine, CortexTenancy};
+use tinymemory_integrations::cortex::{CortexCredential, CortexEngine};
 use tinymemory_tools::context::{self, Brief, ContextSpec};
 use tinymemory_tools::{
     AgentMemory, BackgroundJob, Brain, BrainDocument, Compaction, ContextPack, JobOutcome,
@@ -204,11 +204,7 @@ async fn main() -> Result<(), Error> {
     {
         "reference" => (Arc::new(ReferenceEngine::new()), None),
         "cortex" if !url.is_empty() => (
-            Arc::new(CortexEngine::direct(
-                &url,
-                CortexCredential::api_key(&key),
-                CortexTenancy::SingleUser,
-            )?),
+            Arc::new(CortexEngine::direct(&url, CortexCredential::api_key(&key))?),
             Some(Inspector::new(&url, &key)),
         ),
         "cortex" => return Err("--engine cortex needs CORTEX_DB_URL".into()),

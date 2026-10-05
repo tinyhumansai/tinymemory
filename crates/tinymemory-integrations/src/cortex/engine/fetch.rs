@@ -105,7 +105,7 @@ impl CortexEngine {
                 }
                 let pack = self.log.recall(&body).await?;
                 let beliefs = if wanted_beliefs > 0 {
-                    beliefs_in(&self.root, &pack, "/layers/beliefs")
+                    beliefs_in(&pack, "/layers/beliefs")
                 } else {
                     Vec::new()
                 };

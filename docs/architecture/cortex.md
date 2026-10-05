@@ -26,16 +26,11 @@ the short in-tree version of this.
 ```rust
 use std::sync::Arc;
 use tinymemory_integrations::cortex::{
-    CortexCredential, CortexEngine, CortexTenancy, StaticBearer, CORTEX_API_ENDPOINT,
-    TINYHUMANS_API_ENDPOINT,
+    CortexCredential, CortexEngine, StaticBearer, CORTEX_API_ENDPOINT, TINYHUMANS_API_ENDPOINT,
 };
 
-// CortexDB's own /v1/* API, API key, holding one person's memory.
-let direct = CortexEngine::direct(
-    CORTEX_API_ENDPOINT,
-    CortexCredential::api_key("ctx_..."),
-    CortexTenancy::SingleUser,
-)?;
+// CortexDB's own /v1/* API, API key.
+let direct = CortexEngine::direct(CORTEX_API_ENDPOINT, CortexCredential::api_key("ctx_..."))?;
 // CortexDB behind the TinyHumans backend (/memory/*), bearer resolved per request.
 let hosted = CortexEngine::tinyhumans(
     TINYHUMANS_API_ENDPOINT,
@@ -231,8 +226,7 @@ without naming `CortexEngine`:
 if it is not blank, else the engine's default. It returns `Error::Config` for
 an unknown id; a missing credential (`None`, or a blank `Static`); and
 everything `CortexEngine::new` refuses (not an HTTP(S) URL, cleartext off
-loopback, a `cortexdb` engine with no `tenancy`, a `tinyhumans` engine with
-one; see [Tenancy](#tenancy)). Messages never carry the credential. These are re-exported at the
+loopback). Messages never carry the credential. These are re-exported at the
 crate root: `tinymemory_integrations::{build_engine, list_engines,
 EngineCredential}`.
 
@@ -247,7 +241,6 @@ passes one to `build`, so a config file can be shared or logged.
 | `engine` | string | the selected engine id; `DEFAULT_ENGINE` is `tinyhumans` |
 | `engines` | map id to `EngineSettings` | per-engine settings; optional; an absent engine uses its defaults |
 | `engines.<id>.endpoint` | string, optional | base URL; absent or blank uses the engine's default |
-| `engines.<id>.tenancy` | string | `single_user` or a tenant scope (`org:acme/user:alice`); **required** by `cortexdb`, refused by `tinyhumans` |
 
 TOML:
 
@@ -256,7 +249,6 @@ engine = "cortexdb"
 
 [engines.cortexdb]
 endpoint = "https://cortex.example.com"
-tenancy = "single_user"            # or "org:acme/user:alice"
 
 # An engine with no entry uses its defaults; an empty table is fine too.
 [engines.tinyhumans]
@@ -266,8 +258,7 @@ JSON (the same shape):
 
 ```json
 { "engine": "cortexdb",
-  "engines": { "cortexdb": { "endpoint": "https://cortex.example.com",
-                             "tenancy": "single_user" } } }
+  "engines": { "cortexdb": { "endpoint": "https://cortex.example.com" } } }
 ```
 
 `MemoryConfig::default()` is `engine = "tinyhumans"` with no settings.
@@ -287,46 +278,3 @@ The crate-level `Error` (`tinymemory_integrations::Error`) is the contract's
 `tinymemory_api::Error`: the engine and the registry return it directly, and
 the `documents`, `sources` and `import` modules keep a typed error of their
 own that converts into it.
-
-## Tenancy
-
-CortexDB does not keep one caller out of another's scopes: on a
-`cloud_shared_saas` deployment `v1/events?scope=` reads any scope, a write
-lands in any scope, and `view: "descend"` at a shared ancestor reads every
-scope beneath it. Isolation is the application's job, and on the direct wire
-that is this engine. So a direct engine declares whose memory it holds
-(`CortexTenancy`, `cortex/tenancy/`), and is refused with `Error::Config`
-without a declaration, at construction, before any request:
-
-| Tenancy | Root | Meaning |
-| --- | --- | --- |
-| `single_user` | `app:tinymemory` | the key is one person's (a desktop with the user's own key, a self-hosted server); the original layout |
-| a tenant scope, e.g. `org:acme/user:alice` | `org:acme/user:alice/app:tinymemory` | several people share the key; each person's engine is pinned under their own scope |
-
-A pin is 1 to 4 CortexDB `type:id` segments
-([scopes](https://cortexdb.ai/docs/concepts/scopes)): each type a lowercase
-identifier other than `app` (TinyMemory's own), each id 1 to 64 characters of
-`[A-Za-z0-9_.-]` other than `.` and `..`. The type must also be in the
-deployment's `allowed_scope_types`. Under a pin:
-
-- every scope written, read, listed for discovery or built is the pin's
-  root followed by the namespace and kind, and a TinyMemory namespace cannot
-  name anything above it (its grammar admits no `..`, no leading `/`, no
-  `org:` and no `app:` segment, so `user:bob` is only a node in Alice's tree);
-- every scope the server reports (discovery listings, belief and recall
-  scopes, a resumed cursor) is accepted only if it **starts with** the root,
-  and anything else is skipped as another tenant's;
-- the one server-side traversal, the unscoped recall's `view: "descend"`,
-  starts at the root, so it cannot fan out into a sibling tenant.
-
-A pin keeps the hosts that go through this engine apart. It is not a
-credential: anyone holding the key can still call `/v1/*` with any scope.
-People who must be kept apart from each other's *clients* need a key each,
-or the `tinyhumans` engine. That engine takes no tenancy (and refuses one):
-the backend derives the tenant from the caller's credential and re-roots
-every scope under it, so a hosted root is found wherever it sits in a
-reported scope.
-
-`tinymemory_api::conformance::run_isolation(a, b)` proves a deployment's
-boundary from the outside: see [testing](testing.md#the-isolation-check).
-

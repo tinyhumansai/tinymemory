@@ -39,7 +39,6 @@ use super::items::hit;
 use crate::cortex::descriptor::{CortexWire, Route};
 use crate::cortex::envelope::parse_scope;
 use crate::cortex::error::{Error, Result};
-use crate::cortex::tenancy::ScopeRoot;
 use crate::cortex::transport::{Attempts, urlencode};
 
 /// Scopes read at once.
@@ -67,8 +66,8 @@ fn part(value: Option<&Value>) -> Option<String> {
 
 /// One belief as a learning hit at `rank`; `None` for a belief that is not
 /// shown (a stance other than [`SHOWN_STANCES`], no claim, or a scope this
-/// engine did not write: another tenant's, or none of TinyMemory's).
-pub(super) fn belief_hit(root: &ScopeRoot, belief: &Value, rank: usize) -> Option<Hit> {
+/// crate did not write).
+pub(super) fn belief_hit(belief: &Value, rank: usize) -> Option<Hit> {
     let id = belief.get("id").and_then(Value::as_str)?;
     let stance = belief
         .get("stance")
@@ -77,7 +76,7 @@ pub(super) fn belief_hit(root: &ScopeRoot, belief: &Value, rank: usize) -> Optio
     if !SHOWN_STANCES.contains(&stance) {
         return None;
     }
-    let (namespace, _) = parse_scope(root, belief.get("scope").and_then(Value::as_str)?)?;
+    let (namespace, _) = parse_scope(belief.get("scope").and_then(Value::as_str)?)?;
     let claim = belief.get("claim")?;
     let predicate = part(claim.get("predicate"))?.replace('_', " ");
     let object = part(claim.get("object"))?;
@@ -106,14 +105,14 @@ pub(super) fn belief_hit(root: &ScopeRoot, belief: &Value, rank: usize) -> Optio
 }
 
 /// The beliefs of one recall pack or listing.
-pub(super) fn beliefs_in(root: &ScopeRoot, answer: &Value, pointer: &str) -> Vec<Hit> {
+pub(super) fn beliefs_in(answer: &Value, pointer: &str) -> Vec<Hit> {
     answer
         .pointer(pointer)
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .enumerate()
-        .filter_map(|(rank, belief)| belief_hit(root, belief, rank))
+        .filter_map(|(rank, belief)| belief_hit(belief, rank))
         .collect()
 }
 
@@ -175,7 +174,7 @@ impl CortexEngine {
             "events": 0, "facts": 0, "episodes": 0, "understanding": 0, "beliefs": limit,
         });
         let pack = self.log.recall(&body).await?;
-        Ok(beliefs_in(&self.root, &pack, "/layers/beliefs"))
+        Ok(beliefs_in(&pack, "/layers/beliefs"))
     }
 
     /// The beliefs CortexDB lists for `scope`, at most `limit`.
@@ -195,7 +194,7 @@ impl CortexEngine {
             Err(Error::NotFound(_)) => return Ok(Vec::new()),
             Err(error) => return Err(error),
         };
-        Ok(beliefs_in(&self.root, &listed, "/items"))
+        Ok(beliefs_in(&listed, "/items"))
     }
 }
 

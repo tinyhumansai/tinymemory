@@ -22,7 +22,7 @@ use tinymemory_api::{
     ForgetTarget, LearningKind, MemoryEngine, MemoryMeta, MetaFilter, Namespace, Reach, StoreItem,
 };
 use tinymemory_integrations::brain::brain_document;
-use tinymemory_integrations::cortex::{CortexCredential, CortexEngine, CortexTenancy};
+use tinymemory_integrations::cortex::{CortexCredential, CortexEngine};
 use tinymemory_integrations::documents::{ConverterChain, RawDocument};
 use tinymemory_tools::{
     AgentMemory, Brain, ContextPack, CoreScope, MemoryLayout, PostTurn, PreTurn,
@@ -37,12 +37,7 @@ fn live_engine() -> Option<Arc<dyn MemoryEngine>> {
     let url = std::env::var("TINYMEMORY_LIVE_CORTEXDB_URL").ok()?;
     let key = std::env::var("TINYMEMORY_TEST_CORTEX_KEY").unwrap_or_else(|_| DEFAULT_KEY.into());
     Some(Arc::new(
-        CortexEngine::direct(
-            &url,
-            CortexCredential::api_key(key),
-            CortexTenancy::SingleUser,
-        )
-        .expect("a valid live endpoint"),
+        CortexEngine::direct(&url, CortexCredential::api_key(key)).expect("a valid live endpoint"),
     ))
 }
 

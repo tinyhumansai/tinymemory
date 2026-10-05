@@ -3,7 +3,7 @@
 //! # Scopes
 //!
 //! Every item lives in one scope per kind under its namespace node, below the
-//! engine's TinyMemory root ([`ScopeRoot`], [`scope_path`]):
+//! TinyMemory root [`ROOT_SCOPE`] ([`scope_path`]):
 //!
 //! ```text
 //! app:tinymemory/app:{documents,conversations,learnings}                 the root node
@@ -16,10 +16,8 @@
 //! namespace segments map onto CortexDB's built-in scope types (`agent`,
 //! `team`, `user`, `ws`, `project`, `source`), which every shipped
 //! deployment preset allows. A brain's per-source documents therefore live in
-//! `app:tinymemory/source:pdf/app:documents`. A direct engine pinned to a
-//! tenant ([`crate::cortex::CortexTenancy::Pinned`]) puts the pin first
-//! (`org:acme/user:alice/app:tinymemory/...`); the hosted backend re-roots
-//! every scope under the caller's tenant itself, which is invisible here. A
+//! `app:tinymemory/source:pdf/app:documents`. The hosted backend additionally re-roots every scope under the
+//! caller's tenant, which is invisible here. A
 //! [`tinymemory_api::MetaFilter`]'s `kinds` and `reach` pick which scopes are
 //! read (see `engine::scopes`).
 //!
@@ -54,9 +52,11 @@ use tinymemory_api::{
 };
 
 use crate::cortex::error::{Error, Result};
-use crate::cortex::tenancy::ScopeRoot;
 
 pub(crate) use rebuild::{Decoded, decode_event, rebuild};
+
+/// The TinyMemory root every kind scope sits under.
+pub(crate) const ROOT_SCOPE: &str = "app:tinymemory";
 
 /// The envelope version this crate writes and reads.
 const VERSION: u8 = 2;
@@ -70,9 +70,9 @@ pub(crate) fn kind_leaf(kind: ItemKind) -> &'static str {
     }
 }
 
-/// The scope items of `kind` at `namespace` live in, under `root`.
-pub(crate) fn scope_path(root: &ScopeRoot, namespace: &Namespace, kind: ItemKind) -> String {
-    let mut path = String::from(root.path());
+/// The scope items of `kind` at `namespace` live in.
+pub(crate) fn scope_path(namespace: &Namespace, kind: ItemKind) -> String {
+    let mut path = String::from(ROOT_SCOPE);
     for segment in namespace.segments() {
         path.push('/');
         path.push_str(&segment.to_string());
@@ -82,11 +82,13 @@ pub(crate) fn scope_path(root: &ScopeRoot, namespace: &Namespace, kind: ItemKind
     path
 }
 
-/// The namespace and kind of a TinyMemory scope path under `root` (see
-/// [`ScopeRoot::strip`]); `None` for any other scope, including another
-/// tenant's.
-pub(crate) fn parse_scope(root: &ScopeRoot, path: &str) -> Option<(Namespace, ItemKind)> {
-    let rest: Vec<&str> = root.strip(path)?.split('/').collect();
+/// The namespace and kind of a TinyMemory scope path, wherever it is rooted
+/// (the hosted backend prefixes the caller's tenant); `None` for any other
+/// scope.
+pub(crate) fn parse_scope(path: &str) -> Option<(Namespace, ItemKind)> {
+    let mut parts = path.split('/');
+    parts.by_ref().find(|part| *part == ROOT_SCOPE)?;
+    let rest: Vec<&str> = parts.collect();
     let (leaf, nodes) = rest.split_last()?;
     let kind = ItemKind::ALL
         .into_iter()
@@ -251,7 +253,7 @@ impl Envelope {
 
     /// The experience request appending this envelope, with a fresh body
     /// idempotency key.
-    pub(crate) fn request(&self, root: &ScopeRoot, text: &str) -> Value {
+    pub(crate) fn request(&self, text: &str) -> Value {
         let (modality, role) = match (&self.kind, &self.turn) {
             (ItemKind::Conversation, Some(turn)) => ("conversation", role_of(turn.role)),
             (ItemKind::Document, _) => ("document", "user"),
@@ -271,7 +273,7 @@ impl Envelope {
             context.insert("observed_at".to_string(), json!(at.to_rfc3339()));
         }
         json!({
-            "scope": scope_path(root, &self.meta.namespace, self.kind),
+            "scope": scope_path(&self.meta.namespace, self.kind),
             "modality": modality,
             "idempotency_key": crate::cortex::transport::fresh_idempotency_key(),
             "content": { "kind": "message", "role": role, "text": text },

@@ -173,10 +173,10 @@ half a suite that asserted nothing would also be green.
 ### The isolation check
 
 `conformance::run_isolation(a, b)` is a second check, over **two** engines a
-host built for two users of one backing store (one CortexDB key with two
-tenant pins, or one backend with two users' credentials). User A stores one
-item of each kind and must read them back; then user B, through the same
-workspace filter, A's ids and A's text, must reach none of them:
+host built for two users of one backing store, for example two `tinyhumans`
+engines holding two different users' credentials against one backend. User A
+stores one item of each kind and must read them back; then user B, through
+the same workspace filter, A's ids and A's text, must reach none of them:
 
 | Probe by B | Must |
 | --- | --- |
@@ -191,11 +191,10 @@ workspace filter, A's ids and A's text, must reach none of them:
 
 Both users' items are forgotten afterwards. The calibration in
 `conformance_reference.rs` runs it on two reference engines (must pass) and on
-one engine passed twice (must fail). The CortexDB engine runs it in
-`conformance_tests.rs` on one direct double and one key: two sibling pins,
-and a pin against a pin beneath it, must pass both ways; two `single_user`
-engines must fail. `live_cortexdb.rs` repeats the pinned cases on the real
-server in CI.
+one engine passed twice (must fail), so a check that asserted nothing would
+not be green. The boundary itself is the service in front of the engine
+(tinyhumansai/cortexdb-saas), so the check proves a deployment from the
+outside rather than adding one.
 
 ## CortexDB engine tests
 
@@ -208,8 +207,7 @@ Inside `crates/tinymemory-integrations/src/cortex/`:
   for each wire's behaviour through the doubles).
 - **Conformance** (`conformance_tests.rs`): the shared suite against both
   wires, `the_direct_wire_upholds_the_contract` and
-  `the_tinyhumans_wire_upholds_the_contract`, and the isolation check
-  between tenants pinned on one direct key.
+  `the_tinyhumans_wire_upholds_the_contract`.
 - **The doubles** (`cortex/testing/`, compiled only under `cfg(test)`):
   real HTTP servers on an ephemeral loopback port, built with axum.
 
@@ -323,9 +321,7 @@ TINYMEMORY_LIVE_CORTEXDB_URL=http://127.0.0.1:3141 \
 ```
 
 - `live_cortexdb.rs`: (1) `the_live_server_upholds_the_contract` runs the
-  conformance suite; `two_tenants_on_one_live_key_are_isolated` runs the
-  isolation check between two sibling pins and between a pin and the shared
-  ancestor above it, on fresh scopes per run; (2) `documents_conversations_and_learnings_round_trip_into_context`
+  conformance suite; (2) `documents_conversations_and_learnings_round_trip_into_context`
   stores a document, a conversation with a tool call and a learning, lists
   them back (polling up to 60s, since CortexDB indexes asynchronously), checks
   metadata filters narrow, `fetch` finds the document, `recall` answers with

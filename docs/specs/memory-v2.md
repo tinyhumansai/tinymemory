@@ -223,7 +223,7 @@ integrations it wants, and builds an engine with the registry.
 
 ```rust
 pub struct MemoryConfig { pub engine: String, pub engines: BTreeMap<String, EngineSettings> }
-pub struct EngineSettings { pub endpoint: Option<String>, pub headers: BTreeMap<String, String>, pub tenancy: Option<CortexTenancy> }
+pub struct EngineSettings { pub endpoint: Option<String> }
 pub enum EngineCredential { None, Static(String), Dynamic(Arc<dyn BearerSource>) }
 pub fn list_engines() -> Vec<EngineDescriptor>;
 pub fn build_engine(id: &str, settings: &EngineSettings, credential: EngineCredential) -> Result<Arc<dyn MemoryEngine>>;

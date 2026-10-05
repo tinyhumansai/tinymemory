@@ -16,7 +16,7 @@ selects the surface; `CortexWire::path` is the only place a route name lives.
 
 | | `Direct` (`cortexdb`) | `TinyHumans` (`tinyhumans`) |
 | --- | --- | --- |
-| Constructor | `CortexEngine::direct(endpoint, CortexCredential, CortexTenancy)` | `CortexEngine::tinyhumans(base_url, Arc<dyn BearerSource>)` |
+| Constructor | `CortexEngine::direct(endpoint, CortexCredential)` | `CortexEngine::tinyhumans(base_url, Arc<dyn BearerSource>)` |
 | Default endpoint | `https://api-v1.cortexdb.ai` (`CORTEX_API_ENDPOINT`) | `https://api.tinyhumans.ai` (`TINYHUMANS_API_ENDPOINT`) |
 | Route prefix | `/v1/*` | `/memory/*` |
 | Success body | bare JSON | `{"success": true, "data": ...}`; `data` is unwrapped |

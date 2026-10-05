@@ -29,7 +29,7 @@ use super::CortexEngine;
 use super::fetch::{ranked, recall_body};
 use super::scopes::KindScope;
 use crate::cortex::descriptor::CortexWire;
-use crate::cortex::envelope::Envelope;
+use crate::cortex::envelope::{Envelope, ROOT_SCOPE};
 use crate::cortex::error::{Error, Result};
 
 /// Recall packs built at once when a reach spans several scopes.
@@ -93,8 +93,8 @@ impl CortexEngine {
                 self.pack(&req, &single.path, false).await?,
             )],
             _ if req.filter.reach.is_none() || scopes.is_empty() => vec![(
-                self.root.path().to_string(),
-                self.pack(&req, self.root.path(), true).await?,
+                ROOT_SCOPE.to_string(),
+                self.pack(&req, ROOT_SCOPE, true).await?,
             )],
             _ => {
                 // Most specific node first, so its citations lead.
