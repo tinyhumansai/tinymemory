@@ -110,7 +110,8 @@ Each TinyHumans write carries a random `Idempotency-Key` claim, reused across
 that write's own retries (3 attempts, 250ms then 500ms apart, on a transient
 error). The memory API takes the claim before forwarding and answers any replay
 of a claimed key with 409 without forwarding it; the backend relays that as
-`400` with `errorCode: CONFLICT`, which the client reads as the same conflict.
+`409` with `errorCode: CONFLICT` (older backends: `400` with the same code),
+which the client reads as the same conflict.
 So:
 
 - a transient fault (429, 5xx, timeout) is retried under the same claim; a

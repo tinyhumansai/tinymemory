@@ -193,7 +193,7 @@ text.
 | 402 | `Engine` | hosted: prefixed `[USER_INSUFFICIENT_CREDITS]`; see below |
 | 404 | `NotFound` | |
 | 400, 413, 422 | `InvalidRequest` | |
-| 409 | `Conflict` | on a hosted write retry it triggers recovery instead. Hosted, a `400` whose `errorCode` is `CONFLICT` is a `Conflict` too: that is how the backend relays memory-api's 409 for a claimed key |
+| 409 | `Conflict` | on a hosted write retry it triggers recovery instead. Hosted, a `400` whose `errorCode` is `CONFLICT` is a `Conflict` too: that is how older backends relay memory-api's 409 for a claimed key (newer ones keep the 409) |
 | 408, 429, 500, 502, 503, 504 | `Unavailable` | retried for reads; `is_transient()` is true. 408 is `WAIT_TIMEOUT`: a `wait=indexed` write the indexer has not reached yet, already durable. A 429's numeric `Retry-After` / `RateLimit-Reset` (seconds) holds the client's next requests back (at most 10s) |
 | any other non-2xx | `Engine` | |
 | timeout, DNS, TLS, connect, reset | `Unavailable` | message names the class, for example "TLS failed" or "the host could not be resolved; check the URL" |

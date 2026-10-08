@@ -214,7 +214,8 @@ failures with `errorCode`, refuses a scope outside the memory API's grammar
 a claimed key is refused, never forwarded), refuses a repeated `labels=`
 parameter, and enforces the strict answer schema. It relays engine failures
 the way the backend's `memoryUpstreamError` does (a claimed key's 409 arrives
-as `400` with `errorCode: CONFLICT`, other 4xx as `400 BAD_REQUEST`), answers
+as `409` with `errorCode: CONFLICT`, or as `400` under the `legacy_conflict_400`
+knob that models older backends; other 4xx as `400 BAD_REQUEST`), answers
 its own rate limit as express-rate-limit does (`429`, `{error:{message,type}}`,
 no envelope), and serves `DELETE /memory` (the whole memory, or a bare 404
 with `erase_all_missing`). A forget by `memory_ids` also drops the beliefs

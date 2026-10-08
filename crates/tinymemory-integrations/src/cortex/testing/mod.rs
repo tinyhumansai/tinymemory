@@ -7,7 +7,8 @@
 //! per write (any replay of a claimed key is refused, never forwarded),
 //! refuses a repeated `labels=` parameter, enforces the strict answer
 //! schema, relays engine failures through the backend's own vocabulary (a
-//! claimed key's 409 arrives as `400` with `errorCode: CONFLICT`), answers its
+//! claimed key's 409 arrives as `409` with `errorCode: CONFLICT`, or as `400`
+//! under the `legacy_conflict_400` knob), answers its
 //! rate limit outside the envelope, and erases the whole memory on
 //! `DELETE /memory`. Knobs make either fail the ways the real stacks fail.
 
