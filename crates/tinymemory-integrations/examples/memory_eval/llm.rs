@@ -17,10 +17,18 @@
 
 use serde_json::{Value, json};
 
+/// Changes when the answer instruction changes, so reports remain comparable.
+pub(crate) const PROMPT_VERSION: &str = "source-reconciliation-v2";
+
 /// What the model is told.
-const SYSTEM: &str = "You are an assistant with a long-term memory. The user's message \
-     starts with what your memory recalled, then their question. Answer the question in one \
-     short sentence, using only the memory. If the memory does not say, answer \"unknown\".";
+const SYSTEM: &str = "Answer the question from all memory sections. When two sources have \
+     incompatible values and one has no date, do not assume which is current: name BOTH values \
+     and their sources. Example: an undated policy says shipping takes four days; a dated message \
+     says operations now says six days. Answer: \"The policy says four days, while operations says \
+     six days.\" When a newer dated message explicitly replaces an older dated value, answer \
+     with ONLY the new value and omit the old value even if the question asks what changed. \
+     Example: May says Alice owns a job; June says the job moved to Bob. Answer: \"Bob owns the \
+     job.\" Keep answers short. If no evidence, say unknown.";
 
 /// One answer and what it cost.
 pub(crate) struct Answer {

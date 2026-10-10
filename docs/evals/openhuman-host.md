@@ -254,3 +254,48 @@ that the longer deadline removes the timeout for these two probes, while the
 paraphrase still needs a retrieval-quality improvement. It is a fresh
 collection and cannot be treated as a paired timeout comparison with the
 1500 ms runs above.
+
+## Accuracy follow-up after #255
+
+Fresh CortexDB v0.10.4/OpenRouter runs used the same 100-document middle
+needle fixture, seed 251, v3 layout, three team turns, 5000 ms deadline, and
+30-second ranked-readiness wait. Each run had a new collection. The literal
+owner query hit and the semantic paraphrase missed in all three settings:
+
+| Setting | Pack hits | Paraphrase | Mean pack tokens | Probe timeout |
+| --- | ---: | ---: | ---: | ---: |
+| Default server, six brain documents | 1/2 | miss | 130 | 0/2 |
+| Max Recall server flags, six brain documents | 1/2 | miss | 130 | 0/2 |
+| Default server, 24 brain documents | 1/2 | miss | 512 | 0/2 |
+
+The Max Recall profile enables three HyDE passages, entity-vector seeding,
+assistant excerpts, and enforced bi-temporal validity. Neither it nor a
+fourfold increase in the displayed brain documents recovered this fixture's
+paraphrase. The wider section spent almost four times the context tokens, so
+the production six-document default stays unchanged. `--brain-limit <n>` now
+allows another depth to be measured without editing that default; reports
+record the chosen value.
+
+The same seven-question `team_handoff,conflicts` live slice exposed an answer
+problem after retrieval: all seven packs held their expected evidence, but
+the old benchmark model prompt answered only 5/7 correctly. Both misses
+chose the undated five-day refund document and omitted a conversation saying
+Finance had changed refunds to ten days. The final prompt asks the model to
+distinguish an unresolved conflict (undated policy versus dated report) from
+an explicit update of an older dated value. Reports record its version as
+`source-reconciliation-v2`.
+
+| Fresh run | Pack hit | Model answer, recall | Model answer, synthesis | Timeouts |
+| --- | ---: | ---: | ---: | ---: |
+| Live slice, original prompt | 7/7 | 5/7 | 5/7 | 0 |
+| Live slice, source reconciliation | 7/7 | 7/7 | 6/7 | 0 |
+| Full mock, first conflict prompt | 51/58 | 43/58 | 44/58 | 0 |
+| Full mock, source reconciliation | 51/58 | 50/58 | 50/58 | 0 |
+
+The remaining live synthesis miss named Acme's current Team plan but also
+mentioned the superseded Enterprise plan, which the strict answer grade
+rejects. Mock extraction stayed 34/58 in both full runs. The full mock uses
+keyword-based model doubles, so its pack misses do not estimate live semantic
+retrieval. These are small fresh runs, not a statistical confidence interval.
+The prompt changes the eval answerer only; it does not change TinyMemory's
+stored memory or OpenHuman's production answer instructions.

@@ -72,8 +72,10 @@ file.
 
 Flags (after `--`): `--engine reference|cortex|tinyhumans`, `--only <scenario>`,
 `--enrich-wait <secs>`, `--json <path>`, `--label <name>`, `--llm`,
-`--host openhuman` and `--loop-guard`. With
-`CORTEX_DB_KEEP=1` the run's data is left in place for inspection.
+`--host openhuman`, `--brain-limit <n>`, and `--loop-guard`.
+`--brain-limit` overrides the host's brain-document count and records it in
+the JSON report for retrieval-depth sweeps. `CORTEX_DB_KEEP=1` leaves the
+run's data in place for inspection.
 
 ### How a scenario runs
 

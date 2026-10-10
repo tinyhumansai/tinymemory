@@ -48,6 +48,8 @@
 //!   pre-turn hook with its 5000 ms deadline, policy and logged tool results.
 //! - `--layout v3`: use CortexDB's per-person scope tree and pooled chats.
 //! - `--team-limit <n>`: override the host's team-conversation budget.
+//! - `--brain-limit <n>`: override the number of ranked brain documents in a
+//!   pack, for accuracy-versus-context-budget experiments.
 //! - `--loop-guard`: replay a JSON-scripted 500-turn thread and inspect all
 //!   stored items for an injected `<memory-context>` tag.
 //!
@@ -137,6 +139,7 @@ struct Args {
     host: String,
     layout: String,
     team_limit: Option<usize>,
+    brain_limit: Option<usize>,
     date_hint: bool,
     scale_events: Option<usize>,
     scale_position: String,
@@ -148,6 +151,10 @@ struct Args {
 }
 
 fn args() -> Result<Args, Error> {
+    parse_args(std::env::args().skip(1))
+}
+
+fn parse_args(raw: impl IntoIterator<Item = String>) -> Result<Args, Error> {
     let mut parsed = Args {
         engine: if std::env::var("CORTEX_DB_URL").is_ok() {
             "cortex".into()
@@ -162,6 +169,7 @@ fn args() -> Result<Args, Error> {
         host: "scripted".into(),
         layout: "legacy".into(),
         team_limit: None,
+        brain_limit: None,
         date_hint: false,
         scale_events: None,
         scale_position: "middle".into(),
@@ -171,7 +179,7 @@ fn args() -> Result<Args, Error> {
         expect_derived: false,
         loop_guard: false,
     };
-    let mut raw = std::env::args().skip(1);
+    let mut raw = raw.into_iter();
     while let Some(flag) = raw.next() {
         let mut value = || raw.next().ok_or(format!("{flag} needs a value"));
         match flag.as_str() {
@@ -184,6 +192,7 @@ fn args() -> Result<Args, Error> {
             "--host" => parsed.host = value()?,
             "--layout" => parsed.layout = value()?,
             "--team-limit" => parsed.team_limit = Some(value()?.parse()?),
+            "--brain-limit" => parsed.brain_limit = Some(value()?.parse()?),
             "--date-hint" => parsed.date_hint = true,
             "--scale-events" => parsed.scale_events = Some(value()?.parse()?),
             "--scale-position" => parsed.scale_position = value()?,
@@ -372,6 +381,9 @@ async fn main() -> Result<(), Error> {
     if let Some(team_limit) = args.team_limit {
         policy.team_limit = team_limit;
     }
+    if let Some(brain_limit) = args.brain_limit {
+        policy.brain_limit = brain_limit;
+    }
     let eval = Eval {
         engine: engine.clone(),
         inspector,
@@ -487,11 +499,13 @@ async fn main() -> Result<(), Error> {
             "flags": flags,
             "models": models,
             "probe_answer_model": eval.llm.as_ref().map(|llm| llm.model.as_str()),
+            "probe_answer_prompt": eval.llm.as_ref().map(|_| llm::PROMPT_VERSION),
             "server": server,
             "engine": engine.descriptor().id,
             "host": args.host,
             "layout": args.layout,
             "team_limit": eval.policy.team_limit,
+            "brain_limit": eval.policy.brain_limit,
             "pre_turn_timeout_ms": PRE_TURN_TIMEOUT.as_millis() as u64,
             "date_hint": args.date_hint,
             "scale_events": args.scale_events,

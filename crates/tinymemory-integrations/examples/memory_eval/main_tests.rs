@@ -2,6 +2,18 @@
 
 use super::*;
 
+#[test]
+fn brain_limit_override_is_parsed_without_changing_the_default() {
+    assert_eq!(parse_args(Vec::new()).unwrap().brain_limit, None);
+    assert_eq!(
+        parse_args(["--brain-limit".into(), "24".into()])
+            .unwrap()
+            .brain_limit,
+        Some(24)
+    );
+    assert!(parse_args(["--brain-limit".into(), "bad".into()]).is_err());
+}
+
 #[tokio::test]
 async fn a_probe_does_not_leave_its_question_in_the_measured_corpus() {
     let engine: Arc<dyn MemoryEngine> = Arc::new(ReferenceEngine::new());
