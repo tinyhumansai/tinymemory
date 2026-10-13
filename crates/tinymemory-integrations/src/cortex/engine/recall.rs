@@ -105,7 +105,9 @@ pub(super) fn answer_body(
     });
     match (wire, instructions) {
         (_, Some(text)) => body["answer_instructions"] = json!(text),
-        (CortexWire::Direct, None) => body["answer_instructions"] = Value::Null,
+        (CortexWire::Direct | CortexWire::Proxied, None) => {
+            body["answer_instructions"] = Value::Null;
+        }
         (CortexWire::TinyHumans, None) => {}
     }
     body

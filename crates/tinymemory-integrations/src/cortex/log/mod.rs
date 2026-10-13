@@ -117,7 +117,7 @@ impl Log {
     /// The next poll gap after `current`.
     fn next_poll(&self, current: Duration) -> Duration {
         match self.client.wire() {
-            crate::cortex::CortexWire::Direct => current,
+            crate::cortex::CortexWire::Direct | crate::cortex::CortexWire::Proxied => current,
             crate::cortex::CortexWire::TinyHumans => (current * 2).min(HOSTED_POLL_CEILING),
         }
     }

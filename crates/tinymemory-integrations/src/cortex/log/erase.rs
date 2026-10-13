@@ -1,5 +1,6 @@
-//! Erasing a whole scope: `POST v1/erasures` with `confirm_all`; and, on
-//! the TinyHumans wire, the caller's entire memory: `DELETE memory`.
+//! Erasing a whole scope: `POST v1/erasures` with `confirm_all`; and the
+//! caller's entire memory: `DELETE memory` on the TinyHumans wire, `POST
+//! v1/tenant/purge` on the proxied one.
 //!
 //! The one place this crate sends `confirm_all`, and never with a selector:
 //! the request names exactly one scope, so it erases that scope's events
@@ -23,6 +24,12 @@
 //! the end before answering; a `running` answer is polled at
 //! `v1/erasures/{id}` until it settles, and anything but `completed` is an
 //! error: an erasure that did not finish must never read as done.
+//!
+//! The proxied wire has no `v1/erasures` (a cortexdb-saas proxy does not
+//! expose it), so it erases a scope by listing every event in it and
+//! forgetting them by `memory_ids` (`v1/forget`, which also releases their
+//! write keys and takes what was derived from them). No erasure receipt
+//! exists for that, so it reports none.
 
 use std::time::Instant;
 
@@ -68,7 +75,25 @@ impl Log {
                 ids: vec![id],
             }),
             CortexWire::TinyHumans => self.erase_hosted(scope).await,
+            CortexWire::Proxied => self.erase_by_forget(scope).await,
         }
+    }
+
+    /// Proxied: every event of `scope`, forgotten by id. One scope erased,
+    /// whether or not it held anything, as on Direct.
+    async fn erase_by_forget(&self, scope: &str) -> Result<Erased> {
+        let ids: Vec<String> = self
+            .walk(scope, None)
+            .await?
+            .iter()
+            .filter_map(|event| event.get("id").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect();
+        self.forget_events(scope, &ids).await?;
+        Ok(Erased {
+            scopes: 1,
+            ids: Vec::new(),
+        })
     }
 
     /// Hosted: memory-api's synchronous scoped erasure. Retried on a
@@ -218,30 +243,33 @@ impl Log {
         Ok(id)
     }
 
-    /// Erases the caller's entire hosted memory (`DELETE memory`), every
-    /// scope under its tenant whoever wrote it, returning how many scopes the
-    /// backend erased. TinyHumans only. Sent once, like a scope erasure.
+    /// Erases the caller's entire memory, every scope under its tenant
+    /// whoever wrote it, returning how many scopes the backend erased:
+    /// `DELETE memory` on the TinyHumans wire, `POST v1/tenant/purge` (the
+    /// call's tenant) on the proxied one. Sent once, like a scope erasure.
     ///
     /// A backend without the route answers 404, which is reported as
     /// [`Error::Unsupported`]: nothing was erased.
     pub(crate) async fn erase_all(&self) -> Result<usize> {
-        if self.client.wire() != CortexWire::TinyHumans {
-            return Err(Error::Unsupported(
-                "only the TinyHumans backend erases a whole memory in one request".to_string(),
-            ));
-        }
+        let wire = self.client.wire();
+        let (method, backend) = match wire {
+            CortexWire::TinyHumans => (reqwest::Method::DELETE, "the TinyHumans backend"),
+            CortexWire::Proxied => (reqwest::Method::POST, "the memory proxy"),
+            CortexWire::Direct => {
+                return Err(Error::Unsupported(
+                    "only the TinyHumans backend and a memory proxy erase a whole memory in one \
+                     request"
+                        .to_string(),
+                ));
+            }
+        };
         let answer = self
             .client
-            .json(
-                reqwest::Method::DELETE,
-                self.client.wire().path(Route::EraseAll),
-                None,
-                Attempts::Once,
-            )
+            .json(method, wire.path(Route::EraseAll), None, Attempts::Once)
             .await
             .map_err(|error| match error {
                 Error::NotFound(message) => Error::Unsupported(format!(
-                    "the TinyHumans backend has no whole-memory erase route ({message})"
+                    "{backend} has no whole-memory erase route ({message})"
                 )),
                 other => other,
             })?;

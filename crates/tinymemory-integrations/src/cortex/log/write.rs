@@ -97,7 +97,7 @@ impl Log {
             return Ok(None);
         };
         let (event_id, replayed) = match self.client.wire() {
-            CortexWire::Direct => self.append_direct(requests, wait).await?,
+            CortexWire::Direct | CortexWire::Proxied => self.append_direct(requests, wait).await?,
             CortexWire::TinyHumans => {
                 let mut last = (String::new(), true);
                 for request in requests {
