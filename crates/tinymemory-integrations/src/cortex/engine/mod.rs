@@ -508,7 +508,12 @@ impl MemoryEngine for CortexEngine {
 
     /// Ranked recall is awaited for the last item only (see `store`).
     async fn store_many(&self, items: Vec<StoreItem>) -> Result<Vec<StoreReceipt>> {
-        self.store_many_with(items, WriteOptions::visible()).await
+        if items.is_empty() {
+            return self.store_items(items, WaitFor::Visible).await;
+        }
+        self.for_call(items.iter().map(|item| &item.meta().namespace))?
+            .store_items(items, WaitFor::Visible)
+            .await
     }
 
     /// [`WaitFor::Accepted`] returns once CortexDB captured every event,

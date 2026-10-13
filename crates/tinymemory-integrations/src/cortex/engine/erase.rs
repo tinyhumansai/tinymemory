@@ -17,6 +17,13 @@
 //! passthrough, which memory-api pins under the tenant's root (see
 //! `log::erase`). A backend without that route answers `Unsupported`, so a
 //! caller can fall back to `forget`.
+//!
+//! On the proxied wire the tenant is the call's `user:<id>` node, so an
+//! erasure of that node with its descendants and every kind is the tenant's
+//! whole memory: it purges the tenant in one `POST v1/tenant/purge`, which
+//! also takes anything else stored under the tenant's root (blobs included).
+//! A narrower request erases scope by scope by forgetting each scope's
+//! events (see `log::erase`); the proxy exposes no `v1/erasures`.
 
 use tinymemory_api::{EraseReport, EraseRequest, ItemKind};
 
@@ -28,7 +35,13 @@ impl CortexEngine {
     /// See the module docs.
     pub(super) async fn erase_scopes(&self, req: EraseRequest) -> Result<EraseReport> {
         req.validate()?;
-        if self.log.client.wire() == CortexWire::TinyHumans && is_whole_tree(&req) {
+        let wire = self.log.client.wire();
+        let everything = match wire {
+            CortexWire::TinyHumans => is_whole_tree(&req),
+            CortexWire::Proxied => is_whole_tenant(&req),
+            CortexWire::Direct => false,
+        };
+        if everything {
             let erased_scopes = self.log.erase_all().await?;
             log::debug!("[cortex] erased the whole hosted memory ({erased_scopes} scopes)");
             return Ok(EraseReport {
@@ -52,6 +65,15 @@ impl CortexEngine {
         }
         Ok(report)
     }
+}
+
+/// Whether `req` erases a proxied tenant's whole memory: its `user:<id>`
+/// node (the tenant, see `tenant`), its descendants, every kind.
+fn is_whole_tenant(req: &EraseRequest) -> bool {
+    req.reach.at.depth() == 1
+        && super::tenant::tenant_of(&req.reach.at).is_some()
+        && req.reach.descendants
+        && req.kinds.is_empty()
 }
 
 /// Whether `req` erases everything: the root, its descendants, every kind.
