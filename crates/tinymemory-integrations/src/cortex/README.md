@@ -9,7 +9,7 @@ append-only event log on three wires:
 | --- | --- | --- | --- | --- |
 | `cortexdb` | `CortexEngine::direct` | `/v1/*`, bare JSON | API key (`CortexCredential`) | `https://api-v1.cortexdb.ai` |
 | `tinyhumans` | `CortexEngine::tinyhumans` | `/memory/*`, `{success,data}` envelopes | `BearerSource`, resolved per request | `https://api.tinyhumans.ai` |
-| `cortexdb-proxied` | `CortexEngine::proxied` | a tenant-multiplexing CortexDB proxy's `/v1/*` allowlist, `X-Memory-Tenant` per call | the proxy's service credential | none |
+| `cortexdb-proxied` | `CortexEngine::proxied` | a subset of CortexDB's `/v1/*` routes behind a tenant-multiplexing proxy, `X-Memory-Tenant` per call | the proxy's service credential | none |
 
 The proxied wire names each call's tenant from the leading `user:<id>`
 segment of its namespace and refuses a call without one; see
