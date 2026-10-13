@@ -201,7 +201,10 @@ impl CortexWire {
     /// The request path (no query string) of `route` on this wire.
     pub(crate) fn path(self, route: Route) -> &'static str {
         match (self, route) {
+            // `v1/erasures` is not exposed: a scope is erased by forgetting
+            // its events (see `log::erase`).
             (Self::Proxied, Route::Erasures) => "v1/forget",
+            // Erases everything under the calling tenant's root.
             (Self::Proxied, Route::EraseAll) => "v1/tenant/purge",
             // Never sent: the proxy owns the tenant root and exposes neither
             // scope registration nor the version route.
