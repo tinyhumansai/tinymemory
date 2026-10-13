@@ -634,3 +634,7 @@ mod tests;
 #[cfg(test)]
 #[path = "transport_test_support.rs"]
 mod test_support;
+
+#[cfg(test)]
+#[path = "mod_tenant_tests.rs"]
+mod tenant_tests;
