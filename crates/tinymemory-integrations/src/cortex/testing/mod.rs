@@ -12,7 +12,7 @@
 //! `DELETE /memory`. Knobs make either fail the ways the real stacks fail.
 //!
 //! A third double (`proxied`) stands in for a tenant-multiplexing
-//! cortexdb-saas proxy, with one CortexDB double per tenant behind it.
+//! CortexDB proxy, with one CortexDB double per tenant behind it.
 
 mod log;
 mod proxied;

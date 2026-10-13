@@ -6,16 +6,16 @@
 //!   key ([`CortexWire::Direct`]);
 //! - [`TINYHUMANS_ENGINE_ID`] — CortexDB behind the TinyHumans backend's
 //!   `/memory/*` routes with the host's bearer ([`CortexWire::TinyHumans`]);
-//! - [`PROXIED_ENGINE_ID`] — CortexDB behind a tenant-multiplexing
-//!   cortexdb-saas proxy (memory-api), on the `/v1/*` routes it allows, with
-//!   the tenant named per request ([`CortexWire::Proxied`]).
+//! - [`PROXIED_ENGINE_ID`] — CortexDB behind a tenant-multiplexing proxy,
+//!   on a subset of CortexDB's own `/v1/*` routes, with the tenant named per
+//!   request ([`CortexWire::Proxied`]).
 //!
 //! # The proxied wire's routes
 //!
-//! memory-api forwards an allowlist of CortexDB's own routes, pinning every
-//! scope under the calling tenant's root (`org:<id>`), and refuses anything
-//! else with a 404. A service credential names the tenant on each request in
-//! `X-Memory-Tenant`. The allowlist (cortexdb-saas `src/proxy.rs`):
+//! The wire assumes a proxy that forwards CortexDB's own routes, pinning
+//! every scope under the calling tenant's root, with one service credential
+//! naming the tenant on each request in `X-Memory-Tenant`. It sends only
+//! these routes:
 //!
 //! | Route | Used for |
 //! | --- | --- |
@@ -29,10 +29,9 @@
 //! | `GET v1/admin/health` | health |
 //! | `POST v1/tenant/purge` | erasing the tenant's whole memory |
 //!
-//! Not exposed, so never sent on this wire: `v1/erasures` (a scope is
-//! erased by forgetting its events), scope registration (`v1/scopes`,
-//! `v1/scopes/members`: the proxy owns the root), `v1/admin/version` and
-//! `v1/auth/whoami`.
+//! Never sent on this wire: `v1/erasures` (a scope is erased by forgetting
+//! its events), scope registration (`v1/scopes`, `v1/scopes/members`: the
+//! proxy owns the root), `v1/admin/version` and `v1/auth/whoami`.
 //!
 //! # Why both declare only [`FetchMode::Hybrid`]
 //!
@@ -137,7 +136,7 @@ pub fn proxied_descriptor() -> EngineDescriptor {
     EngineDescriptor {
         id: PROXIED_ENGINE_ID,
         label: "CortexDB (proxied)",
-        description: "CortexDB behind a tenant-multiplexing cortexdb-saas proxy, one tenant per \
+        description: "CortexDB behind a tenant-multiplexing CortexDB proxy, one tenant per \
                       user",
         hosted: false,
         needs_endpoint: true,
@@ -179,7 +178,7 @@ pub enum CortexWire {
     /// schema, `Idempotency-Key` claims on writes, and no bulk, wait or health
     /// route.
     TinyHumans,
-    /// CortexDB behind a tenant-multiplexing cortexdb-saas proxy: the
+    /// CortexDB behind a tenant-multiplexing CortexDB proxy: the
     /// `/v1/*` routes the proxy allows (see the module docs), in CortexDB's
     /// own dialect, with the tenant named on every request in
     /// `X-Memory-Tenant` from the call's namespace (see

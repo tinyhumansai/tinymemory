@@ -9,7 +9,7 @@
 //!   TinyHumans backend's `/memory/*` routes, with the host's session JWT or
 //!   API key resolved from a [`BearerSource`] on every request;
 //! - **`cortexdb-proxied`** ([`CortexEngine::proxied`]) — CortexDB behind a
-//!   tenant-multiplexing cortexdb-saas proxy, on the `/v1/*` routes it
+//!   tenant-multiplexing CortexDB proxy, on the `/v1/*` routes it
 //!   allows, naming each call's tenant (the id of its namespace's leading
 //!   `user:` segment) in `X-Memory-Tenant`.
 //!

@@ -1,4 +1,4 @@
-//! A double of a tenant-multiplexing cortexdb-saas proxy (memory-api).
+//! A double of a tenant-multiplexing CortexDB proxy.
 //!
 //! It serves only the proxy's allowlist (anything else is the router's bare
 //! 404), records every request with the tenant it named, refuses a request

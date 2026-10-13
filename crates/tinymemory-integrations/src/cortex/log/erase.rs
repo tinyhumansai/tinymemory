@@ -25,7 +25,7 @@
 //! `v1/erasures/{id}` until it settles, and anything but `completed` is an
 //! error: an erasure that did not finish must never read as done.
 //!
-//! The proxied wire has no `v1/erasures` (a cortexdb-saas proxy does not
+//! The proxied wire has no `v1/erasures` (a tenant-multiplexing CortexDB proxy does not
 //! expose it), so it erases a scope by listing every event in it and
 //! forgetting them by `memory_ids` (`v1/forget`, which also releases their
 //! write keys and takes what was derived from them). No erasure receipt

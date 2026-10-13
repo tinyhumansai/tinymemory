@@ -60,7 +60,7 @@ const HEALTH_PROBE_SCOPE: &str = "tmh:probe";
 /// Build it with [`CortexEngine::direct`] for CortexDB's own API,
 /// [`CortexEngine::tinyhumans`] for CortexDB behind the TinyHumans backend,
 /// or [`CortexEngine::proxied`] for CortexDB behind a tenant-multiplexing
-/// cortexdb-saas proxy.
+/// CortexDB proxy.
 /// `Debug` shows the wire and endpoint origin, never the credential.
 #[derive(Clone)]
 pub struct CortexEngine {
@@ -362,7 +362,7 @@ impl CortexEngine {
         )
     }
 
-    /// CortexDB behind a tenant-multiplexing cortexdb-saas proxy (memory-api)
+    /// CortexDB behind a tenant-multiplexing CortexDB proxy
     /// at `endpoint`, registered as `cortexdb-proxied`, with the proxy's
     /// service `credential`.
     ///

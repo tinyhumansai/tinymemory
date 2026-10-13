@@ -56,7 +56,7 @@ it (a trailing `/` is added when missing).
 
 A third wire, `CortexWire::Proxied` (`cortexdb-proxied`, built with
 `CortexEngine::proxied(endpoint, CortexCredential)`), speaks to CortexDB
-behind a tenant-multiplexing cortexdb-saas proxy (memory-api). The proxy
+behind a tenant-multiplexing CortexDB proxy. The proxy
 holds one service credential for many tenants, pins each tenant's scopes
 under its own root (`org:<id>`), and forwards only an allowlist of
 CortexDB's own `/v1/*` routes. It answers in CortexDB's dialect, so bodies

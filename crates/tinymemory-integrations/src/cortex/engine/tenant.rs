@@ -1,6 +1,6 @@
 //! The proxied wire's tenant: named per call, from the call's namespace.
 //!
-//! A tenant-multiplexing cortexdb-saas proxy serves many tenants behind one
+//! A tenant-multiplexing CortexDB proxy serves many tenants behind one
 //! service credential, and the caller names the tenant of each request in
 //! `X-Memory-Tenant`. One engine serves every tenant, so the tenant cannot
 //! be fixed when the engine is built: it is read from each call. A host

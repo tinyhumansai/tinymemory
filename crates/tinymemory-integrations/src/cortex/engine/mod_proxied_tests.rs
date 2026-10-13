@@ -1,4 +1,4 @@
-//! The proxied wire against a cortexdb-saas proxy double: each call names
+//! The proxied wire against a tenant-multiplexing CortexDB proxy double: each call names
 //! its tenant from its namespace, a call without one sends nothing, erasing
 //! a tenant purges it, and only the proxy's allowlisted routes are used.
 
