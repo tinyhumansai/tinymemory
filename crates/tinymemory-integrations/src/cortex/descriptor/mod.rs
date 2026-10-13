@@ -74,7 +74,7 @@ pub const CORTEXDB_ENGINE_ID: &str = "cortexdb";
 /// Configuration id of CortexDB behind the TinyHumans backend.
 pub const TINYHUMANS_ENGINE_ID: &str = "tinyhumans";
 
-/// Configuration id of CortexDB behind a tenant-multiplexing cortexdb-saas
+/// Configuration id of CortexDB behind a tenant-multiplexing CortexDB
 /// proxy ([`CortexWire::Proxied`]).
 pub const PROXIED_ENGINE_ID: &str = "cortexdb-proxied";
 
@@ -126,7 +126,7 @@ pub fn tinyhumans_descriptor() -> EngineDescriptor {
     }
 }
 
-/// The descriptor of CortexDB behind a tenant-multiplexing cortexdb-saas
+/// The descriptor of CortexDB behind a tenant-multiplexing CortexDB
 /// proxy: run by the operator, not a third party; the endpoint is required
 /// (there is no public default), so is the proxy's service credential; fetch
 /// is hybrid only, and beliefs build on demand (`v1/beliefs/build` is
