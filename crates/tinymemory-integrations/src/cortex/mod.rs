@@ -1,15 +1,19 @@
 //! The CortexDB memory engine for TinyMemory v2.
 //!
 //! [`CortexEngine`] implements [`tinymemory_api::MemoryEngine`] over
-//! CortexDB's append-only event log, on either of two wires:
+//! CortexDB's append-only event log, on one of three wires:
 //!
 //! - **`cortexdb`** ([`CortexEngine::direct`]) — a CortexDB server's own
 //!   `/v1/*` API with a bearer API key;
 //! - **`tinyhumans`** ([`CortexEngine::tinyhumans`]) — CortexDB behind the
 //!   TinyHumans backend's `/memory/*` routes, with the host's session JWT or
-//!   API key resolved from a [`BearerSource`] on every request.
+//!   API key resolved from a [`BearerSource`] on every request;
+//! - **`cortexdb-proxied`** ([`CortexEngine::proxied`]) — CortexDB behind a
+//!   tenant-multiplexing cortexdb-saas proxy, on the `/v1/*` routes it
+//!   allows, naming each call's tenant (the id of its namespace's leading
+//!   `user:` segment) in `X-Memory-Tenant`.
 //!
-//! Both declare [`tinymemory_api::FetchMode::Hybrid`] only: CortexDB's
+//! All declare [`tinymemory_api::FetchMode::Hybrid`] only: CortexDB's
 //! recall body has no keyword/vector switch (see [`cortexdb_descriptor`]).
 //!
 //! Hosts normally build an engine through [`crate::registry::build_engine`] or
@@ -80,8 +84,8 @@ mod local_paths_tests;
 
 pub use credential::{BearerSource, CortexCredential, StaticBearer};
 pub use descriptor::{
-    CORTEX_API_ENDPOINT, CORTEXDB_ENGINE_ID, CortexWire, TINYHUMANS_API_ENDPOINT,
-    TINYHUMANS_ENGINE_ID, cortexdb_descriptor, tinyhumans_descriptor,
+    CORTEX_API_ENDPOINT, CORTEXDB_ENGINE_ID, CortexWire, PROXIED_ENGINE_ID, TINYHUMANS_API_ENDPOINT,
+    TINYHUMANS_ENGINE_ID, cortexdb_descriptor, proxied_descriptor, tinyhumans_descriptor,
 };
 pub use engine::CortexEngine;
 pub use error::{Error, Result, error_code, is_insufficient_credits};

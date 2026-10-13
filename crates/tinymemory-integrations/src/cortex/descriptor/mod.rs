@@ -1,11 +1,38 @@
-//! The two registrations of the engine, and the routes each wire speaks.
+//! The registrations of the engine, and the routes each wire speaks.
 //!
-//! One engine type serves two configuration ids:
+//! One engine type serves three configuration ids:
 //!
 //! - [`CORTEXDB_ENGINE_ID`] — a CortexDB server's own `/v1/*` API with an API
 //!   key ([`CortexWire::Direct`]);
 //! - [`TINYHUMANS_ENGINE_ID`] — CortexDB behind the TinyHumans backend's
-//!   `/memory/*` routes with the host's bearer ([`CortexWire::TinyHumans`]).
+//!   `/memory/*` routes with the host's bearer ([`CortexWire::TinyHumans`]);
+//! - [`PROXIED_ENGINE_ID`] — CortexDB behind a tenant-multiplexing
+//!   cortexdb-saas proxy (memory-api), on the `/v1/*` routes it allows, with
+//!   the tenant named per request ([`CortexWire::Proxied`]).
+//!
+//! # The proxied wire's routes
+//!
+//! memory-api forwards an allowlist of CortexDB's own routes, pinning every
+//! scope under the calling tenant's root (`org:<id>`), and refuses anything
+//! else with a 404. A service credential names the tenant on each request in
+//! `X-Memory-Tenant`. The allowlist (cortexdb-saas `src/proxy.rs`):
+//!
+//! | Route | Used for |
+//! | --- | --- |
+//! | `POST v1/experience`, `POST v1/experience/bulk` | writes, as on Direct |
+//! | `GET v1/events`, `GET v1/events/{id}` | listings |
+//! | `POST v1/recall`, `POST v1/answer` | fetch and recall |
+//! | `POST v1/forget` | forget, and erasing a scope event by event |
+//! | `GET v1/scopes/list` | the scopes a reach covers |
+//! | `GET v1/beliefs`, `POST v1/beliefs/build` | beliefs |
+//! | `GET v1/facts`, `v1/understanding`, `v1/derivation/status`, `v1/blobs` | not used by this engine |
+//! | `GET v1/admin/health` | health |
+//! | `POST v1/tenant/purge` | erasing the tenant's whole memory |
+//!
+//! Not exposed, so never sent on this wire: `v1/erasures` (a scope is
+//! erased by forgetting its events), scope registration (`v1/scopes`,
+//! `v1/scopes/members`: the proxy owns the root), `v1/admin/version` and
+//! `v1/auth/whoami`.
 //!
 //! # Why both declare only [`FetchMode::Hybrid`]
 //!
@@ -47,6 +74,10 @@ pub const CORTEXDB_ENGINE_ID: &str = "cortexdb";
 
 /// Configuration id of CortexDB behind the TinyHumans backend.
 pub const TINYHUMANS_ENGINE_ID: &str = "tinyhumans";
+
+/// Configuration id of CortexDB behind a tenant-multiplexing cortexdb-saas
+/// proxy ([`CortexWire::Proxied`]).
+pub const PROXIED_ENGINE_ID: &str = "cortexdb-proxied";
 
 /// Default base URL of CortexDB's managed API.
 pub const CORTEX_API_ENDPOINT: &str = "https://api-v1.cortexdb.ai";
@@ -96,6 +127,27 @@ pub fn tinyhumans_descriptor() -> EngineDescriptor {
     }
 }
 
+/// The descriptor of CortexDB behind a tenant-multiplexing cortexdb-saas
+/// proxy: run by the operator, not a third party; the endpoint is required
+/// (there is no public default), so is the proxy's service credential; fetch
+/// is hybrid only, and beliefs build on demand (`v1/beliefs/build` is
+/// allowed), as on a self-hosted CortexDB.
+#[must_use]
+pub fn proxied_descriptor() -> EngineDescriptor {
+    EngineDescriptor {
+        id: PROXIED_ENGINE_ID,
+        label: "CortexDB (proxied)",
+        description: "CortexDB behind a tenant-multiplexing cortexdb-saas proxy, one tenant per \
+                      user",
+        hosted: false,
+        needs_endpoint: true,
+        needs_key: true,
+        default_endpoint: None,
+        fetch_modes: FETCH_MODES.to_vec(),
+        consolidation: Consolidation::OnDemand,
+    }
+}
+
 /// How a direct engine whose endpoint has `origin` (scheme, host and port,
 /// with no trailing slash) consolidates by
 /// default: [`Consolidation::Automatic`] on CortexDB's managed API,
@@ -127,6 +179,12 @@ pub enum CortexWire {
     /// schema, `Idempotency-Key` claims on writes, and no bulk, wait or health
     /// route.
     TinyHumans,
+    /// CortexDB behind a tenant-multiplexing cortexdb-saas proxy: the
+    /// `/v1/*` routes the proxy allows (see the module docs), in CortexDB's
+    /// own dialect, with the tenant named on every request in
+    /// `X-Memory-Tenant` from the call's namespace (see
+    /// [`crate::cortex::CortexEngine::proxied`]).
+    Proxied,
 }
 
 impl CortexWire {
@@ -136,24 +194,32 @@ impl CortexWire {
         match self {
             Self::Direct => cortexdb_descriptor(),
             Self::TinyHumans => tinyhumans_descriptor(),
+            Self::Proxied => proxied_descriptor(),
         }
     }
 
     /// The request path (no query string) of `route` on this wire.
     pub(crate) fn path(self, route: Route) -> &'static str {
         match (self, route) {
-            (Self::Direct, Route::Experience) => "v1/experience",
-            (Self::Direct, Route::Bulk) => "v1/experience/bulk",
-            (Self::Direct, Route::Events) => "v1/events",
-            (Self::Direct, Route::Recall) => "v1/recall",
-            (Self::Direct, Route::Forget) => "v1/forget",
-            (Self::Direct, Route::Answer) => "v1/answer",
-            (Self::Direct, Route::Health) => "v1/admin/health",
-            (Self::Direct, Route::Scopes) => "v1/scopes/list",
+            (Self::Proxied, Route::Erasures) => "v1/forget",
+            (Self::Proxied, Route::EraseAll) => "v1/tenant/purge",
+            // Never sent: the proxy owns the tenant root and exposes neither
+            // scope registration nor the version route.
+            (Self::Proxied, Route::RegisterScope) => "v1/scopes",
+            (Self::Proxied, Route::ScopeMembers) => "v1/scopes/members",
+            (Self::Proxied, Route::Version) => "v1/admin/version",
+            (Self::Direct | Self::Proxied, Route::Experience) => "v1/experience",
+            (Self::Direct | Self::Proxied, Route::Bulk) => "v1/experience/bulk",
+            (Self::Direct | Self::Proxied, Route::Events) => "v1/events",
+            (Self::Direct | Self::Proxied, Route::Recall) => "v1/recall",
+            (Self::Direct | Self::Proxied, Route::Forget) => "v1/forget",
+            (Self::Direct | Self::Proxied, Route::Answer) => "v1/answer",
+            (Self::Direct | Self::Proxied, Route::Health) => "v1/admin/health",
+            (Self::Direct | Self::Proxied, Route::Scopes) => "v1/scopes/list",
             (Self::Direct, Route::RegisterScope) => "v1/scopes",
             (Self::Direct, Route::ScopeMembers) => "v1/scopes/members",
-            (Self::Direct, Route::BuildBeliefs) => "v1/beliefs/build",
-            (Self::Direct, Route::Beliefs) => "v1/beliefs",
+            (Self::Direct | Self::Proxied, Route::BuildBeliefs) => "v1/beliefs/build",
+            (Self::Direct | Self::Proxied, Route::Beliefs) => "v1/beliefs",
             (Self::Direct, Route::Erasures) => "v1/erasures",
             // Never sent: Direct erases the whole tree scope by scope.
             (Self::Direct, Route::EraseAll) => "v1/erasures",
@@ -212,9 +278,11 @@ pub(crate) enum Route {
     BuildBeliefs,
     /// List one scope's beliefs (Direct only).
     Beliefs,
-    /// Erase a whole scope for good (Direct only).
+    /// Erase a whole scope for good (Direct and TinyHumans; the proxied wire
+    /// forgets the scope's events instead).
     Erasures,
-    /// Erase the caller's entire memory in one request (TinyHumans only).
+    /// Erase the caller's entire memory in one request (TinyHumans: `DELETE
+    /// memory`; Proxied: `POST v1/tenant/purge`).
     EraseAll,
     /// Build info and the API capabilities the server accepts (Direct only).
     Version,
