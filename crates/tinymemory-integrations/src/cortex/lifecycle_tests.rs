@@ -99,13 +99,15 @@ async fn an_agent_loop_runs_the_same_on_either_wire() {
         for job in report.jobs.into_iter().chain(ingested.job) {
             let ran = support.run_background(job).await.unwrap();
             match wire {
-                CortexWire::Direct => assert_eq!(ran.outcome, JobOutcome::Done),
+                CortexWire::Direct | CortexWire::Proxied => {
+                    assert_eq!(ran.outcome, JobOutcome::Done)
+                }
                 CortexWire::TinyHumans => assert_eq!(ran.outcome, JobOutcome::Scheduled),
             }
         }
         let builds = state.seen.lock().unwrap().builds.clone();
         match wire {
-            CortexWire::Direct => assert_eq!(
+            CortexWire::Direct | CortexWire::Proxied => assert_eq!(
                 builds,
                 [
                     serde_json::json!({ "scope": "app:tinymemory/agent:support-01/app:conversations" }),
@@ -131,7 +133,7 @@ async fn an_agent_loop_runs_the_same_on_either_wire() {
                 .nth(1)
                 .map(|rest| rest.split("\n## ").next().unwrap_or_default());
             match wire {
-                CortexWire::Direct => assert!(
+                CortexWire::Direct | CortexWire::Proxied => assert!(
                     learnings.is_some_and(|section| section
                         .contains("- user said Refunds settle within five business days.")),
                     "{wire:?}: {pack}"

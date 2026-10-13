@@ -182,7 +182,9 @@ async fn every_other_store_still_looks_its_items_up_first() {
     use tinymemory_api::WriteOptions;
     for (engine, state) in both().await {
         let listing = match engine.wire() {
-            crate::cortex::CortexWire::Direct => "GET /v1/events",
+            crate::cortex::CortexWire::Direct | crate::cortex::CortexWire::Proxied => {
+                "GET /v1/events"
+            }
             crate::cortex::CortexWire::TinyHumans => "GET /memory/events",
         };
         let cases: Vec<(StoreItem, WriteOptions)> = vec![

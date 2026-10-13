@@ -189,10 +189,7 @@ async fn erasing_the_whole_tree_names_no_tenant_and_is_refused() {
     let (endpoint, proxy) = proxied_double().await;
     let mut request = EraseRequest::new(Reach::subtree(Namespace::ROOT));
     request.whole_tree = true;
-    let error = proxied_engine(&endpoint)
-        .erase(request)
-        .await
-        .unwrap_err();
+    let error = proxied_engine(&endpoint).erase(request).await.unwrap_err();
     assert!(matches!(error, Error::Config(_)), "{error:?}");
     assert!(proxy.requests().is_empty());
 }
@@ -282,8 +279,7 @@ async fn the_tenant_header_cannot_be_fixed_as_a_default_header() {
 #[tokio::test]
 async fn a_cluster_service_endpoint_needs_the_cleartext_opt_in() {
     let endpoint = "http://memory-api.memory.svc.cluster.local";
-    let engine =
-        CortexEngine::proxied(endpoint, CortexCredential::api_key("service")).unwrap();
+    let engine = CortexEngine::proxied(endpoint, CortexCredential::api_key("service")).unwrap();
     let error = engine.store(learning("user:alice")).await.unwrap_err();
     assert!(matches!(error, Error::Config(_)), "{error:?}");
     assert!(
@@ -291,8 +287,8 @@ async fn a_cluster_service_endpoint_needs_the_cleartext_opt_in() {
         "{error}"
     );
     for public in ["http://memory.example.com", "http://10.0.0.7"] {
-        let error = CortexEngine::proxied(public, CortexCredential::api_key("service"))
-            .unwrap_err();
+        let error =
+            CortexEngine::proxied(public, CortexCredential::api_key("service")).unwrap_err();
         assert!(matches!(error, Error::Config(_)), "{public}: {error:?}");
     }
 }

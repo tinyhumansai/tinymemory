@@ -57,7 +57,10 @@ fn a_proxied_call_without_a_tenant_is_a_config_error() {
     ];
     for namespaces in cases {
         let error = engine.for_call(namespaces.iter()).unwrap_err();
-        assert!(matches!(error, Error::Config(_)), "{namespaces:?}: {error:?}");
+        assert!(
+            matches!(error, Error::Config(_)),
+            "{namespaces:?}: {error:?}"
+        );
     }
 }
 

@@ -458,9 +458,7 @@ impl MemoryEngine for CortexEngine {
             };
             return match probe.log.client.probe(wire.path(Route::Health)).await {
                 Ok(()) => EngineHealth::Ok,
-                Err(error @ Error::Unavailable(_)) => {
-                    EngineHealth::Degraded(health_reason(&error))
-                }
+                Err(error @ Error::Unavailable(_)) => EngineHealth::Degraded(health_reason(&error)),
                 Err(error) => EngineHealth::Down(health_reason(&error)),
             };
         }

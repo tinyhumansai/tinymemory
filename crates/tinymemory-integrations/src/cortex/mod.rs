@@ -84,8 +84,9 @@ mod local_paths_tests;
 
 pub use credential::{BearerSource, CortexCredential, StaticBearer};
 pub use descriptor::{
-    CORTEX_API_ENDPOINT, CORTEXDB_ENGINE_ID, CortexWire, PROXIED_ENGINE_ID, TINYHUMANS_API_ENDPOINT,
-    TINYHUMANS_ENGINE_ID, cortexdb_descriptor, proxied_descriptor, tinyhumans_descriptor,
+    CORTEX_API_ENDPOINT, CORTEXDB_ENGINE_ID, CortexWire, PROXIED_ENGINE_ID,
+    TINYHUMANS_API_ENDPOINT, TINYHUMANS_ENGINE_ID, cortexdb_descriptor, proxied_descriptor,
+    tinyhumans_descriptor,
 };
 pub use engine::CortexEngine;
 pub use error::{Error, Result, error_code, is_insufficient_credits};
