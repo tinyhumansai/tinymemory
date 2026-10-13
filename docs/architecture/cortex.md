@@ -239,6 +239,14 @@ the registry) returns `Error::Config` for:
 Loopback `http://` is allowed so local servers and the test doubles work. The
 endpoint is operator supplied, which is why response bodies are capped.
 
+One exception is opt-in: an `http://` endpoint on a Kubernetes cluster-service
+host (`<service>.<namespace>.svc`, optionally `.cluster.local`) builds, but
+every call fails with `Error::Config` before anything is sent until the host
+calls `CortexEngine::with_private_network_cleartext()`. That is for an
+in-cluster service, such as a cortexdb-saas proxy, whose traffic
+NetworkPolicy keeps inside the cluster. Any other cleartext host is still
+refused when the engine is built.
+
 ## Registry
 
 `registry` (feature `cortex`) is how a host turns configuration into an engine
