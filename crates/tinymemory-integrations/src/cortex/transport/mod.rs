@@ -10,6 +10,19 @@
 //! [`crate::cortex::Error::Unavailable`]; a write is sent once, because a timeout on a
 //! write leaves whether it applied unknown. Hosted writes recover from that
 //! one level up, with an `Idempotency-Key` claim (see `log::write`).
+//!
+//! **The proxied wire names a tenant on every request.** A client on
+//! [`CortexWire::Proxied`] carries the tenant of the call it serves
+//! ([`HttpClient::set_tenant`]) and sends it in [`TENANT_HEADER`]; a client
+//! without one refuses to send anything, so a request can never reach the
+//! proxy as a shared or default tenant.
+//!
+//! **Cleartext only on loopback, or by opt-in inside a cluster.** A
+//! credentialed `http://` endpoint is refused unless its host is loopback.
+//! A cluster-service host (`*.svc`, `*.svc.cluster.local`) is accepted when
+//! the engine is built, but no request is sent to it until the host opts in
+//! with [`HttpClient::allow_private_network_cleartext`]: that is for a
+//! service whose traffic NetworkPolicy keeps inside the cluster.
 
 mod actor;
 mod body;
@@ -48,6 +61,32 @@ const STATE_CHANGE_ATTEMPTS: u32 = 6;
 /// First read-retry gap; it doubles per attempt.
 const READ_BACKOFF: Duration = Duration::from_millis(250);
 
+/// The header the proxied wire names each request's tenant in: a bare id
+/// (`[A-Za-z0-9_-]`, at most [`MAX_TENANT_ID`] characters) the proxy turns
+/// into the tenant whose root it pins every scope under.
+pub(crate) const TENANT_HEADER: &str = "X-Memory-Tenant";
+
+/// The longest tenant id the proxied wire sends.
+pub(crate) const MAX_TENANT_ID: usize = 96;
+
+/// Whether `id` is a tenant id the proxied wire may send: 1 to
+/// [`MAX_TENANT_ID`] characters of `[A-Za-z0-9_-]`.
+pub(crate) fn valid_tenant_id(id: &str) -> bool {
+    (1..=MAX_TENANT_ID).contains(&id.len())
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
+/// Whether a cleartext endpoint may be sent to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cleartext {
+    /// HTTPS, or HTTP to a loopback host.
+    Permitted,
+    /// HTTP to a cluster-service host the engine has not opted in to.
+    NeedsOptIn,
+}
+
 /// Whether a call may be repeated.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Attempts {
@@ -72,11 +111,16 @@ pub(crate) struct HttpClient {
     /// Fixed headers the host attaches to every request (see
     /// [`default_headers`]).
     default_headers: HeaderMap,
+    /// The tenant the proxied wire names (see [`TENANT_HEADER`]); `None`
+    /// refuses every proxied request.
+    tenant: Option<HeaderValue>,
+    /// Whether a cleartext endpoint may be sent to.
+    cleartext: Cleartext,
 }
 
 /// Headers a host may not fix: the credential, the claim and actor this
 /// transport sets itself, and what the HTTP stack owns.
-const RESERVED_HEADERS: [&str; 7] = [
+const RESERVED_HEADERS: [&str; 8] = [
     "authorization",
     "proxy-authorization",
     "cookie",
@@ -84,6 +128,7 @@ const RESERVED_HEADERS: [&str; 7] = [
     "content-length",
     "idempotency-key",
     actor::ACTOR_HEADER,
+    TENANT_HEADER,
 ];
 
 /// The header map for `pairs`: fixed, non-credential headers a host sends
@@ -128,6 +173,20 @@ impl std::fmt::Debug for HttpClient {
     }
 }
 
+/// Whether `url`'s host is a Kubernetes cluster-service name
+/// (`<service>.<namespace>.svc`, optionally `.cluster.local`), which only
+/// resolves inside the cluster.
+pub(crate) fn is_cluster_service(url: &Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    [".svc", ".svc.cluster.local"].iter().any(|suffix| {
+        host.strip_suffix(suffix)
+            .is_some_and(|name| !name.is_empty() && !name.ends_with('.'))
+    })
+}
+
 /// Refuses cleartext HTTP to a non-loopback host. Every engine here is
 /// credentialed, so a cleartext endpoint would put the bearer on the wire.
 pub(crate) fn ensure_secure_endpoint(url: &Url) -> Result<()> {
@@ -157,7 +216,9 @@ impl HttpClient {
     /// # Errors
     ///
     /// [`Error::Config`] for an unparsable or non-HTTP(S) endpoint, a
-    /// cleartext non-loopback endpoint, or a blank static credential.
+    /// cleartext endpoint that is neither loopback nor a cluster service (a
+    /// cluster service is refused per request until it is opted in to), or
+    /// a blank static credential.
     pub(crate) fn new(
         wire: CortexWire,
         endpoint: &str,
@@ -170,7 +231,11 @@ impl HttpClient {
                 "memory endpoint must use http or https".to_string(),
             ));
         }
-        ensure_secure_endpoint(&url)?;
+        let cleartext = match ensure_secure_endpoint(&url) {
+            Ok(()) => Cleartext::Permitted,
+            Err(_) if is_cluster_service(&url) => Cleartext::NeedsOptIn,
+            Err(error) => return Err(error),
+        };
         if let CortexCredential::Static(key) = &credential
             && key.trim().is_empty()
         {
@@ -189,7 +254,34 @@ impl HttpClient {
             actor: actor::ActorCache::default(),
             pause: pause::RatePause::default(),
             default_headers: HeaderMap::new(),
+            tenant: None,
+            cleartext,
         })
+    }
+
+    /// Names `id` as the tenant of every proxied request from now on.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] for an id that is not 1 to [`MAX_TENANT_ID`]
+    /// characters of `[A-Za-z0-9_-]`.
+    pub(crate) fn set_tenant(&mut self, id: &str) -> Result<()> {
+        if !valid_tenant_id(id) {
+            return Err(Error::Config(format!(
+                "the memory tenant id `{id}` must be 1 to {MAX_TENANT_ID} characters of A-Z, a-z, \
+                 0-9, `_` or `-`"
+            )));
+        }
+        let value = HeaderValue::from_str(id)
+            .map_err(|_| Error::Config(format!("the memory tenant id `{id}` is not valid")))?;
+        self.tenant = Some(value);
+        Ok(())
+    }
+
+    /// Lets a cleartext endpoint on a cluster-service host be sent to.
+    /// Changes nothing for any other endpoint.
+    pub(crate) fn allow_private_network_cleartext(&mut self) {
+        self.cleartext = Cleartext::Permitted;
     }
 
     /// Sends `headers` on every request from now on.
@@ -218,6 +310,24 @@ impl HttpClient {
     /// be a header value (CR/LF) is [`Error::Unauthorized`] and no request is
     /// sent; no message carries the token.
     async fn request(&self, method: Method, path: &str) -> Result<RequestBuilder> {
+        if self.cleartext == Cleartext::NeedsOptIn {
+            return Err(Error::Config(format!(
+                "the memory endpoint `{}` is cleartext http to a cluster service; opt in with \
+                 `with_private_network_cleartext` or use https",
+                self.origin()
+            )));
+        }
+        let tenant = match (self.wire, &self.tenant) {
+            (CortexWire::Proxied, None) => {
+                return Err(Error::Config(
+                    "the proxied memory wire names a tenant on every request, and this call has \
+                     none"
+                        .to_string(),
+                ));
+            }
+            (CortexWire::Proxied, Some(tenant)) => Some(tenant.clone()),
+            _ => None,
+        };
         let url = self
             .endpoint
             .join(path.trim_start_matches('/'))
@@ -228,11 +338,15 @@ impl HttpClient {
             ))
         })?;
         let header = credential_header(&token)?;
-        Ok(self
+        let mut request = self
             .inner
             .request(method, url)
             .headers(self.default_headers.clone())
-            .header(AUTHORIZATION, header))
+            .header(AUTHORIZATION, header);
+        if let Some(tenant) = tenant {
+            request = request.header(TENANT_HEADER, tenant);
+        }
+        Ok(request)
     }
 
     /// Sends a JSON request and returns the decoded body (unwrapped from the
@@ -351,7 +465,9 @@ impl HttpClient {
                 CortexWire::Direct => {
                     failure::direct_status_error(self.host(), label, status, &text)
                 }
-                CortexWire::TinyHumans => {
+                // memory-api names its refusals with an `error_code`, which
+                // the hosted mapping leads the message with.
+                CortexWire::TinyHumans | CortexWire::Proxied => {
                     failure::hosted_status_error(self.host(), label, status, &text)
                 }
             });
