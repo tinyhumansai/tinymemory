@@ -52,6 +52,42 @@ for. Both fail with `Error::Unsupported` before any request.
 The endpoint is joined with the route, so a base URL with a path prefix keeps
 it (a trailing `/` is added when missing).
 
+### The proxied wire
+
+A third wire, `CortexWire::Proxied` (`cortexdb-proxied`, built with
+`CortexEngine::proxied(endpoint, CortexCredential)`), speaks to CortexDB
+behind a tenant-multiplexing cortexdb-saas proxy (memory-api). The proxy
+holds one service credential for many tenants, pins each tenant's scopes
+under its own root (`org:<id>`), and forwards only an allowlist of
+CortexDB's own `/v1/*` routes. It answers in CortexDB's dialect, so bodies
+are as on Direct; refusals carry memory-api's `error_code`, which leads the
+message as `[CODE] `.
+
+- **Tenant per call.** Every request carries `X-Memory-Tenant: <id>`, where
+  `<id>` is the id of the leading `user:` segment of the call's namespace
+  (the item's namespace on a write, the reach's `at` on a read, forget or
+  erase). A call naming no such namespace (no reach, the root, `team:…`, a
+  forget by bare ids) or two different tenants fails with `Error::Config`
+  before anything is sent; no request ever goes out without a tenant. Ids
+  are 1 to 96 characters of `[A-Za-z0-9_-]`. The header is reserved, so
+  `with_default_headers` cannot fix one tenant for every call.
+- **Tenant layout.** No root is sent and none is registered: the engine
+  starts in the `with_tenant_root` layout, and `with_scope_root` is refused.
+- **Routes.** As Direct for experience, bulk, events, recall, answer,
+  forget, scopes/list, beliefs and beliefs/build, and `v1/admin/health`
+  (probed as tenant `tinymemory-health`, under which nothing is written).
+  Never sent: `v1/erasures`, `v1/scopes` and `v1/scopes/members`,
+  `v1/admin/version`, `v1/auth/whoami`; no `observed_actor` attribution
+  (the proxy strips it).
+- **Erase.** A scope is erased by listing its events and forgetting them by
+  `memory_ids` (no receipts). Erasing the tenant's `user:<id>` node with its
+  descendants and every kind is `POST v1/tenant/purge`, which removes
+  everything under the tenant's root, blobs included.
+- **Cleartext inside a cluster.** A cleartext endpoint on a cluster-service
+  host (`*.svc`, `*.svc.cluster.local`) builds, but every call fails with
+  `Error::Config` until `with_private_network_cleartext()` opts in. Any
+  other non-loopback `http://` endpoint is still refused when built.
+
 ## Endpoints and their shapes
 
 Only the fields the engine reads or writes are listed. Unlisted response
