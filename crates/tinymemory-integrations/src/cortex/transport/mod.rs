@@ -465,8 +465,8 @@ impl HttpClient {
                 CortexWire::Direct => {
                     failure::direct_status_error(self.host(), label, status, &text)
                 }
-                // memory-api names its refusals with an `error_code`, which
-                // the hosted mapping leads the message with.
+                // Both name their refusals with an `error_code`, which the
+                // hosted mapping leads the message with.
                 CortexWire::TinyHumans | CortexWire::Proxied => {
                     failure::hosted_status_error(self.host(), label, status, &text)
                 }

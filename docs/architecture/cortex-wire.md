@@ -58,10 +58,9 @@ A third wire, `CortexWire::Proxied` (`cortexdb-proxied`, built with
 `CortexEngine::proxied(endpoint, CortexCredential)`), speaks to CortexDB
 behind a tenant-multiplexing CortexDB proxy. The proxy
 holds one service credential for many tenants, pins each tenant's scopes
-under its own root (`org:<id>`), and forwards only an allowlist of
-CortexDB's own `/v1/*` routes. It answers in CortexDB's dialect, so bodies
-are as on Direct; refusals carry memory-api's `error_code`, which leads the
-message as `[CODE] `.
+under its own root, and forwards a subset of CortexDB's own `/v1/*` routes.
+It answers in CortexDB's dialect, so bodies are as on Direct; a refusal's
+`error_code` leads the message as `[CODE] `.
 
 - **Tenant per call.** Every request carries `X-Memory-Tenant: <id>`, where
   `<id>` is the id of the leading `user:` segment of the call's namespace

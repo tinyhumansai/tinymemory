@@ -1,6 +1,6 @@
 //! The proxied wire against a tenant-multiplexing CortexDB proxy double: each call names
 //! its tenant from its namespace, a call without one sends nothing, erasing
-//! a tenant purges it, and only the proxy's allowlisted routes are used.
+//! a tenant purges it, and only the proxied wire.s routes are used.
 
 use super::*;
 use crate::cortex::testing::{ProxyDouble, proxied_double, proxied_engine, sample_items};
@@ -195,7 +195,7 @@ async fn erasing_the_whole_tree_names_no_tenant_and_is_refused() {
 }
 
 #[tokio::test]
-async fn only_allowlisted_routes_are_used() {
+async fn only_the_proxied_routes_are_used() {
     let (endpoint, proxy) = proxied_double().await;
     let engine = proxied_engine(&endpoint);
     for item in sample_items() {
@@ -278,7 +278,7 @@ async fn the_tenant_header_cannot_be_fixed_as_a_default_header() {
 
 #[tokio::test]
 async fn a_cluster_service_endpoint_needs_the_cleartext_opt_in() {
-    let endpoint = "http://memory-api.memory.svc.cluster.local";
+    let endpoint = "http://memory-proxy.example.svc.cluster.local";
     let engine = CortexEngine::proxied(endpoint, CortexCredential::api_key("service")).unwrap();
     let error = engine.store(learning("user:alice")).await.unwrap_err();
     assert!(matches!(error, Error::Config(_)), "{error:?}");

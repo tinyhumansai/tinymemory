@@ -90,7 +90,7 @@ fn the_proxied_descriptor_needs_an_endpoint_and_a_key() {
 }
 
 #[test]
-fn the_proxied_route_table_is_the_proxys_allowlist() {
+fn the_proxied_route_table_lists_only_its_routes() {
     let expected = [
         (Route::Experience, "v1/experience"),
         (Route::Bulk, "v1/experience/bulk"),

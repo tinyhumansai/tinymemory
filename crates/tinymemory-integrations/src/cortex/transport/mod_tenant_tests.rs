@@ -62,10 +62,10 @@ async fn a_proxied_request_carries_its_tenant_and_no_other_wire_does() {
 #[test]
 fn cluster_service_hosts_are_recognised() {
     for host in [
-        "http://memory-api.memory.svc.cluster.local",
-        "http://memory-api.memory.svc.cluster.local.:80",
-        "http://memory-api.memory.svc",
-        "http://Memory-API.Memory.SVC.Cluster.Local/base",
+        "http://memory-proxy.example.svc.cluster.local",
+        "http://memory-proxy.example.svc.cluster.local.:80",
+        "http://memory-proxy.example.svc",
+        "http://Memory-Proxy.Example.SVC.Cluster.Local/base",
     ] {
         assert!(is_cluster_service(&Url::parse(host).unwrap()), "{host}");
     }
@@ -83,7 +83,7 @@ fn cluster_service_hosts_are_recognised() {
 
 #[tokio::test]
 async fn cluster_service_cleartext_is_sent_only_after_the_opt_in() {
-    let mut client = proxied("http://memory-api.memory.svc.cluster.local").unwrap();
+    let mut client = proxied("http://memory-proxy.example.svc.cluster.local").unwrap();
     client.set_tenant("p42").unwrap();
     let error = client.request(Method::GET, "v1/events").await.unwrap_err();
     assert!(matches!(error, Error::Config(_)), "{error:?}");
@@ -96,7 +96,7 @@ async fn cluster_service_cleartext_is_sent_only_after_the_opt_in() {
         .unwrap();
     assert_eq!(
         request.url().as_str(),
-        "http://memory-api.memory.svc.cluster.local/v1/events"
+        "http://memory-proxy.example.svc.cluster.local/v1/events"
     );
 }
 

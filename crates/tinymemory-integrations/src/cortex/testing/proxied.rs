@@ -1,8 +1,8 @@
 //! A double of a tenant-multiplexing CortexDB proxy.
 //!
-//! It serves only the proxy's allowlist (anything else is the router's bare
+//! It serves only the proxied wire's routes (anything else is the router's bare
 //! 404), records every request with the tenant it named, refuses a request
-//! naming none (`400 TENANT_REQUIRED`), and forwards the rest to a CortexDB
+//! naming none (`400 MISSING_TENANT`), and forwards the rest to a CortexDB
 //! double of that tenant's own, started on first sight. One double per
 //! tenant stands in for the proxy pinning each tenant under its own root:
 //! no tenant can see another's events. `POST /v1/tenant/purge` drops the
@@ -131,7 +131,7 @@ async fn handle(
         return StatusCode::NOT_FOUND.into_response();
     }
     let Some(tenant) = tenant.filter(|t| !t.is_empty()) else {
-        return refuse(StatusCode::BAD_REQUEST, "TENANT_REQUIRED");
+        return refuse(StatusCode::BAD_REQUEST, "MISSING_TENANT");
     };
     if purge {
         let dropped = proxy.tenants.lock().unwrap().remove(&tenant);
