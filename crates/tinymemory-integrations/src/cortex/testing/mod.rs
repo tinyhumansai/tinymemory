@@ -10,8 +10,12 @@
 //! claimed key's 409 arrives as `400` with `errorCode: CONFLICT`), answers its
 //! rate limit outside the envelope, and erases the whole memory on
 //! `DELETE /memory`. Knobs make either fail the ways the real stacks fail.
+//!
+//! A third double (`proxied`) stands in for a tenant-multiplexing
+//! cortexdb-saas proxy, with one CortexDB double per tenant behind it.
 
 mod log;
+mod proxied;
 mod routes;
 
 use std::collections::HashSet;
@@ -22,6 +26,7 @@ use std::time::Duration;
 use axum::Router;
 
 pub(crate) use log::CortexLog;
+pub(crate) use proxied::{ProxyDouble, proxied_double};
 
 use tinymemory_api::{LearningKind, MemoryMeta, Role, SourceKind, StoreItem, Turn};
 
@@ -229,6 +234,13 @@ pub(crate) fn direct_engine(endpoint: &str) -> CortexEngine {
 /// A TinyHumans engine on `endpoint` with fast test timing.
 pub(crate) fn hosted_engine(endpoint: &str) -> CortexEngine {
     CortexEngine::tinyhumans(endpoint, Arc::new(StaticBearer::new(TEST_TOKEN)))
+        .unwrap()
+        .with_test_timing(TEST_VISIBILITY)
+}
+
+/// A proxied engine on `endpoint` with fast test timing.
+pub(crate) fn proxied_engine(endpoint: &str) -> CortexEngine {
+    CortexEngine::proxied(endpoint, CortexCredential::api_key(TEST_TOKEN))
         .unwrap()
         .with_test_timing(TEST_VISIBILITY)
 }
