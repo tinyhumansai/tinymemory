@@ -42,7 +42,12 @@ fn level_from_score(score: u32) -> RiskLevel {
 pub fn scan(content: &str) -> PiiScanResult {
     // BTreeMap keeps the output deterministic (categories emitted in enum
     // order) without a separate sort pass.
-    let mut counts: BTreeMap<PiiCategory, usize> = BTreeMap::new();
+    //
+    // Spans rather than a running count: two rules in one category can match
+    // the same value (`+1 415-555-0100` is both a US-format and an
+    // international phone number), and a count is of identifiers, not of
+    // rules, so overlapping spans are folded into one before they are counted.
+    let mut spans: BTreeMap<PiiCategory, Vec<(usize, usize)>> = BTreeMap::new();
 
     for rule in rules() {
         for m in rule.regex.find_iter(content) {
@@ -51,13 +56,20 @@ pub fn scan(content: &str) -> PiiScanResult {
             {
                 continue;
             }
-            *counts.entry(rule.category).or_default() += 1;
+            spans
+                .entry(rule.category)
+                .or_default()
+                .push((m.start(), m.end()));
         }
     }
 
-    if counts.is_empty() {
+    if spans.is_empty() {
         return PiiScanResult::default();
     }
+    let counts: BTreeMap<PiiCategory, usize> = spans
+        .into_iter()
+        .map(|(category, spans)| (category, distinct_spans(spans)))
+        .collect();
 
     let distinct = counts.len() as u32;
     let mut score: u32 = counts.keys().map(|c| c.weight()).sum();
@@ -83,6 +95,22 @@ pub fn scan(content: &str) -> PiiScanResult {
         categories,
         hits,
     }
+}
+
+/// The number of distinct values among `spans`: byte ranges that overlap are
+/// one value seen by more than one rule, ranges that merely touch or stand
+/// apart are separate values. The same value written twice is two.
+fn distinct_spans(mut spans: Vec<(usize, usize)>) -> usize {
+    spans.sort_unstable();
+    let mut count = 0;
+    let mut covered_to = 0;
+    for (start, end) in spans {
+        if count == 0 || start >= covered_to {
+            count += 1;
+        }
+        covered_to = covered_to.max(end);
+    }
+    count
 }
 
 /// Replacement for every value [`redact_identifiers`] removes.
