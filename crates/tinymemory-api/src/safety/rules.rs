@@ -3,8 +3,8 @@
 //! Two flavours of rule, both compiled once into a process-wide static:
 //!
 //! * **Pattern rules** — a [`Regex`] plus an optional structural `validator`
-//!   (Luhn for cards, octet range for IPv4) that rejects shape-matches that
-//!   aren't actually valid identifiers.
+//!   (Luhn for cards, mod-97 for IBANs, octet range for IPv4) that rejects
+//!   shape-matches that aren't actually valid identifiers.
 //! * **Keyword rules** — an alternation of domain terms wrapped in word
 //!   boundaries, used for the topical categories (medical / legal / financial /
 //!   family) where there is no single canonical value shape.
@@ -86,6 +86,39 @@ pub(crate) fn is_luhn_valid(raw: &str) -> bool {
     sum.is_multiple_of(10)
 }
 
+/// Validate an IBAN candidate (ISO 13616): separators removed, 15–34
+/// characters, a two-letter country code, two check digits, and a mod-97
+/// remainder of 1 over the rearranged value with letters expanded to two
+/// digits (A=10 … Z=35). Lower-case input is accepted and upper-cased first.
+pub(crate) fn is_iban(raw: &str) -> bool {
+    let compact: Vec<u8> = raw
+        .bytes()
+        .filter(|b| !matches!(b, b' ' | b'-'))
+        .map(|b| b.to_ascii_uppercase())
+        .collect();
+    if !(15..=34).contains(&compact.len())
+        || !compact[..2].iter().all(u8::is_ascii_uppercase)
+        || !compact[2..4].iter().all(u8::is_ascii_digit)
+        || !compact.iter().all(u8::is_ascii_alphanumeric)
+    {
+        return false;
+    }
+    // The checksum reads the value with its first four characters moved to
+    // the end; the remainder is folded in as each character arrives so the
+    // number never has to exist whole.
+    let remainder = compact[4..]
+        .iter()
+        .chain(&compact[..4])
+        .fold(0u32, |remainder, &b| {
+            if b.is_ascii_digit() {
+                (remainder * 10 + u32::from(b - b'0')) % 97
+            } else {
+                (remainder * 100 + u32::from(b - b'A') + 10) % 97
+            }
+        });
+    remainder == 1
+}
+
 /// Validate that a dotted-quad match is a real IPv4 address (each octet 0–255).
 pub(crate) fn is_ipv4(raw: &str) -> bool {
     let octets: Vec<&str> = raw.split('.').collect();
@@ -121,18 +154,27 @@ fn build_rules() -> Vec<Rule> {
             r"\b\d{3}[-\s]\d{2}[-\s]\d{4}\b",
             None,
         ),
+        // IBAN bank account: 2-letter country + 2 check digits + 11–30
+        // alphanumerics, either contiguous or in the groups of four it is
+        // ordinarily written in, separated by a space or hyphen, with a
+        // shorter final group. The two spellings are separate alternatives so
+        // the grouped one cannot run on into the word after a contiguous
+        // value; the mod-97 validator then rejects a run of letters and
+        // digits that merely has the shape. Listed before the card rule: an
+        // IBAN's digit groups can contain a Luhn-valid run, and redaction
+        // applies rules in this order, so the longer identifier has to claim
+        // its span first.
+        pattern_rule(
+            PiiCategory::BankAccount,
+            r"\b[A-Za-z]{2}\d{2}(?:[A-Za-z0-9]{11,30}|(?:[ -][A-Za-z0-9]{4}){2,7}(?:[ -][A-Za-z0-9]{1,3})?)\b",
+            Some(is_iban),
+        ),
         // Payment card: 13–19 digits with optional single separators, then
         // Luhn-validated so version strings / IDs don't false-positive.
         pattern_rule(
             PiiCategory::CreditCard,
             r"\b\d(?:[ -]?\d){12,18}\b",
             Some(is_luhn_valid),
-        ),
-        // IBAN bank account: 2-letter country + 2 check digits + 11–30 alnum.
-        pattern_rule(
-            PiiCategory::BankAccount,
-            r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b",
-            None,
         ),
         // US-style phone number (3-3-4 groups, requires a separator so it
         // doesn't swallow arbitrary 10-digit numbers).

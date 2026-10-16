@@ -9,7 +9,7 @@
 //! * detection is deterministic + offline (no external egress on classify),
 //! * category identifiers serialize to stable snake_case strings.
 
-use super::rules::{is_ipv4, is_luhn_valid};
+use super::rules::{is_iban, is_ipv4, is_luhn_valid};
 use super::*;
 
 // ---------------------------------------------------------------------------
@@ -52,6 +52,58 @@ fn detects_iban_bank_account() {
     let r = scan("transfer to GB82WEST12345698765432 please");
     assert!(r.has_category(PiiCategory::BankAccount));
     assert_eq!(r.level, RiskLevel::High);
+}
+
+#[test]
+fn detects_grouped_and_lower_case_ibans() {
+    // The groups of four an IBAN is ordinarily written in, with either
+    // separator, and the lower-case spelling a form might hand back.
+    for raw in [
+        "GB82 WEST 1234 5698 7654 32",
+        "GB82-WEST-1234-5698-7654-32",
+        "gb82 west 1234 5698 7654 32",
+        "DE89 3704 0044 0532 0130 00",
+        "FR76 3000 6000 0112 3456 7890 189",
+    ] {
+        let r = scan(raw);
+        assert!(
+            r.has_category(PiiCategory::BankAccount),
+            "missed {raw:?}: {r:?}"
+        );
+        assert_eq!(r.level, RiskLevel::High, "strong id must be High: {raw:?}");
+    }
+}
+
+#[test]
+fn an_iban_with_a_bad_checksum_is_not_a_bank_account() {
+    for raw in [
+        "GB82WEST12345698765433",
+        "GB82 WEST 1234 5698 7654 33",
+        "AB12CDEFGHIJKLMNOP",
+    ] {
+        let r = scan(raw);
+        assert!(
+            !r.has_category(PiiCategory::BankAccount),
+            "flagged {raw:?}: {r:?}"
+        );
+    }
+}
+
+#[test]
+fn iban_redaction_covers_the_whole_grouped_value() {
+    assert_eq!(
+        redact_identifiers("pay GB82 WEST 1234 5698 7654 32 today"),
+        "pay [redacted] today"
+    );
+    assert_eq!(
+        redact_identifiers("pay GB82WEST12345698765432 today"),
+        "pay [redacted] today"
+    );
+    // The word after a grouped value is not swallowed into it.
+    assert_eq!(
+        redact_identifiers("pay DE89 3704 0044 0532 0130 00 today"),
+        "pay [redacted] today"
+    );
 }
 
 #[test]
@@ -307,6 +359,16 @@ fn luhn_validator_accepts_known_good_and_rejects_bad() {
     assert!(is_luhn_valid("4111 1111 1111 1111"));
     assert!(!is_luhn_valid("1234567890123456"));
     assert!(!is_luhn_valid("12345")); // too short
+}
+
+#[test]
+fn iban_validator_checks_the_mod_97_remainder() {
+    assert!(is_iban("GB82WEST12345698765432"));
+    assert!(is_iban("GB82 WEST 1234 5698 7654 32"));
+    assert!(is_iban("de89 3704 0044 0532 0130 00"));
+    assert!(!is_iban("GB82WEST12345698765433")); // one digit off
+    assert!(!is_iban("G882WEST12345698765432")); // digit in the country code
+    assert!(!is_iban("GB82WEST123")); // too short
 }
 
 #[test]
