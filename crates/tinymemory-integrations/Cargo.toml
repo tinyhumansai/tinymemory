@@ -63,7 +63,7 @@ sha2 = { version = "0.11", optional = true }
 pdf-extract = { version = "0.12", optional = true }
 calamine = { version = "0.36", optional = true }
 quick-xml = { version = "0.41", optional = true }
-zip = { version = "8", default-features = false, features = ["deflate"], optional = true }
+zip = { version = "9", default-features = false, features = ["deflate"], optional = true }
 
 # --- sources ---
 # `MemorySourceEntry` and friends appear in generated schemas, same as the
@@ -104,7 +104,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The format and office tests build their OOXML fixtures in code.
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # `MemoryConfig` round-trips through the TOML a host stores it in.
 toml = "1.1"
 
