@@ -58,7 +58,7 @@ sha2 = { version = "0.11", optional = true }
 # pure Rust with no system libraries. Spreadsheet import is temporarily
 # disabled until a safe Calamine release is published.
 pdf-extract = { version = "0.12", optional = true }
-quick-xml = { version = "0.41", optional = true }
+quick-xml = { version = "0.42", optional = true }
 zip = { version = "9", default-features = false, features = ["deflate"], optional = true }
 
 # --- sources ---
