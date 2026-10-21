@@ -209,6 +209,9 @@ impl TurnPack {
         }
         let why = match error {
             Error::Off(_) => "memory is disabled or no engine is configured",
+            Error::Unauthorized(_) if error.is_plan_required() => {
+                "this memory feature is not included in the account's plan"
+            }
             Error::Unauthorized(_) => "the memory engine rejected the sign-in or API key",
             Error::InsufficientCredits(_) => {
                 "the account is out of credits; topping up restores it"

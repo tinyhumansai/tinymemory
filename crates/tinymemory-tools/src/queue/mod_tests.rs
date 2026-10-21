@@ -128,6 +128,24 @@ async fn an_account_wide_refusal_never_uses_up_a_jobs_attempts() {
 }
 
 #[tokio::test]
+async fn plan_refusal_does_not_consume_a_jobs_attempts() {
+    let queue = queue();
+    queue.enqueue(&Namespace::ROOT, vec![build("a")]).await;
+    let engine: Arc<dyn MemoryEngine> = Arc::new(RefusingEngine::with(
+        tinymemory_api::Error::Unauthorized("[MEMORY_PLAN_REQUIRED] upgrade".into()),
+    ));
+
+    for _ in 0..MAX_ATTEMPTS + 2 {
+        let runs = queue.run(engine.clone(), Selection::All, 0).await.unwrap();
+        assert_eq!(runs[0].outcome, "failed");
+    }
+
+    let state = queue.snapshot().await;
+    assert_eq!(state.pending.len(), 1, "the job waits for an upgrade");
+    assert_eq!(state.pending[0].attempts, 0);
+}
+
+#[tokio::test]
 async fn a_job_that_keeps_failing_is_dropped_and_says_so() {
     let queue = queue();
     queue.enqueue(&Namespace::ROOT, vec![build("a")]).await;

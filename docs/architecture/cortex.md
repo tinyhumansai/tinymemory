@@ -189,7 +189,9 @@ text.
 
 | HTTP status | `Error` variant | Notes |
 | --- | --- | --- |
-| 401, 403 | `Unauthorized` | message tells the user to check the API key (direct) or re-authenticate (hosted) |
+| 401 | `Unauthorized` | the session or API key is missing, expired, or rejected |
+| 403 with `errorCode` ending in `_PLAN_REQUIRED` | `Unauthorized` (`is_plan_required() == true`) | hosted plan does not include the requested memory feature; do not retry or send the user through sign-in |
+| other 403 | `Unauthorized` | message tells the user to check the API key (direct) or re-authenticate (hosted) |
 | 402 | `InsufficientCredits` | hosted only when `errorCode` is `USER_INSUFFICIENT_CREDITS`; other 402 responses remain `Engine` |
 | 404 | `NotFound` | |
 | 400, 413, 422 | `InvalidRequest` | |
@@ -206,13 +208,21 @@ text.
 uppercased, restricted to ASCII letters, digits and `_`, at most 64
 characters), and an exhausted-credit refusal is also represented by the
 typed `Error::InsufficientCredits` variant. A failure with no
-`errorCode` is filed under `UNAUTHORIZED` (401, 403), `USER_INSUFFICIENT_CREDITS`
-(402 only when explicitly identified by the backend), `RATE_LIMITED` (429),
+`errorCode` is filed under `UNAUTHORIZED` (401, and 403 without a recognized
+plan code), `*_PLAN_REQUIRED` (403, as `Unauthorized` with stable host code
+`PLAN_REQUIRED` and `is_plan_required() == true`),
+`USER_INSUFFICIENT_CREDITS` (402 only when explicitly identified by the backend), `RATE_LIMITED` (429),
 `HTTP_402` for an uncoded payment-required response, or `HTTP_<status>`. A
 generic 402 is not enough evidence to classify the account as out of credits.
 `error_code(&Error) -> Option<&str>` reads the code back, and returns `None`
 for a direct failure, a local refusal, or a message that no longer starts with
 a well-formed prefix.
+
+**A plan refusal keeps the `Unauthorized` variant.** A hosted 403 with an
+`errorCode` ending in `_PLAN_REQUIRED` has stable host code `PLAN_REQUIRED`
+and is account-wide, so it must not enter a retry loop or a sign-in flow.
+`Error::is_plan_required()` lets a host explain that the account's plan does
+not include the feature without adding a variant that breaks exhaustive matches.
 
 **An exhausted balance is `InsufficientCredits`.** It is not transient
 (`Unavailable` would invite a retry loop that cannot succeed until someone tops

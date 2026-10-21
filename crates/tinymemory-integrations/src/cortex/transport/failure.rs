@@ -8,7 +8,7 @@
 use reqwest::StatusCode;
 use serde_json::Value;
 
-use crate::cortex::error::{Error, INSUFFICIENT_CREDITS_CODE};
+use crate::cortex::error::{Error, INSUFFICIENT_CREDITS_CODE, PLAN_REQUIRED_SUFFIX};
 
 /// Longest excerpt of a backend's error text kept in a message.
 const MAX_DETAIL_CHARS: usize = 300;
@@ -112,17 +112,23 @@ fn excerpt(text: &str) -> String {
     shown
 }
 
+/// `head`, then the backend's `detail` after a spaced em-dash when it said
+/// anything.
+fn with_detail(head: String, detail: &str) -> String {
+    if detail.is_empty() {
+        head
+    } else {
+        format!("{head} — {detail}")
+    }
+}
+
 /// Maps a status to its variant, given the message head and detail.
 fn by_status(status: StatusCode, head: String, detail: &str) -> Error {
     let insufficient_credits = head
         .strip_prefix('[')
         .and_then(|rest| rest.split_once("] "))
         .is_some_and(|(code, _)| code == INSUFFICIENT_CREDITS_CODE);
-    let message = if detail.is_empty() {
-        head
-    } else {
-        format!("{head} — {detail}")
-    };
+    let message = with_detail(head, detail);
     match status.as_u16() {
         402 if insufficient_credits => Error::InsufficientCredits(message),
         401 | 403 => Error::Unauthorized(message),
@@ -198,10 +204,25 @@ pub(crate) fn hosted_status_error(
         || body.to_string(),
         |e| e.as_str().map_or_else(|| e.to_string(), str::to_string),
     );
+    // Keep the public Error enum exhaustive-match compatible. Unauthorized is
+    // already account-wide; its backend-code helper distinguishes this plan
+    // refusal from a credential rejection for the host's upgrade surface.
+    if code.ends_with(PLAN_REQUIRED_SUFFIX) {
+        let head = format!(
+            "[{code}] memory API {label} on {host}: memory is not included in this account's \
+             plan (HTTP {status})"
+        );
+        return Error::Unauthorized(with_detail(head, &excerpt(&message)));
+    }
     let head = match status.as_u16() {
-        401 | 403 => format!(
+        401 => format!(
             "[{code}] memory API {label} on {host}: the session expired or the API key was \
              rejected (HTTP {status}); re-authenticate"
+        ),
+        // The credential was accepted and the request refused, so nothing
+        // here says the session expired.
+        403 => format!(
+            "[{code}] memory API {label} on {host}: the request was refused (HTTP {status})"
         ),
         402 if code == INSUFFICIENT_CREDITS_CODE => format!(
             "[{code}] memory API {label} on {host}: the account has insufficient credits \

@@ -55,7 +55,7 @@ pub enum SyncError {
 
 impl SyncError {
     /// Whether the failure is about the account, not the item: out of
-    /// credits, signed out, or the engine unreachable. Retrying siblings
+    /// credits, not in the plan, signed out, or the engine unreachable. Retrying siblings
     /// would fail the same way, so a sync stops on it.
     #[must_use]
     pub fn is_account_wide(&self) -> bool {

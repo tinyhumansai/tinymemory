@@ -13,6 +13,7 @@
 //! | --- | --- |
 //! | 401, 403 | [`Error::Unauthorized`] |
 //! | 402 | [`Error::InsufficientCredits`] when the hosted code names exhausted credits |
+//! | any, hosted, code `*_PLAN_REQUIRED` | [`Error::Unauthorized`] ([`is_plan_required`]) |
 //! | 404 | [`Error::NotFound`] |
 //! | 400, 413, 422 | [`Error::InvalidRequest`] |
 //! | 409 | [`Error::Conflict`] |
@@ -32,6 +33,16 @@
 //! means; the hosted transport maps its structured backend code to
 //! [`Error::InsufficientCredits`] so a host can show a top-up prompt.
 //!
+//! **Why a plan refusal remains `Unauthorized`.** The hosted backend answers `403` with
+//! a `*_PLAN_REQUIRED` code (`MEMORY_PLAN_REQUIRED`) when the account's plan
+//! does not include the feature. The credential is fine, so generic 403 text
+//! would sign a valid user out (tinyhumansai/openhuman#8081). Retaining the
+//! existing variant preserves exhaustive host matches; [`is_plan_required`]
+//! lets a host show an upgrade path without retrying operations that cannot
+//! succeed. A hosted `403` without such a code stays `Unauthorized`
+//! but says the request was refused, not that the session expired, which
+//! only a `401` says.
+//!
 //! # The `[CODE]` prefix
 //!
 //! The TinyHumans backend names every failure with an `errorCode`. The
@@ -49,6 +60,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// The TinyHumans backend's code for an exhausted credit balance (HTTP 402).
 pub(crate) const INSUFFICIENT_CREDITS_CODE: &str = "USER_INSUFFICIENT_CREDITS";
+
+/// The suffix of the TinyHumans backend's codes for a feature the account's
+/// plan does not include (`MEMORY_PLAN_REQUIRED`).
+pub(crate) const PLAN_REQUIRED_SUFFIX: &str = "_PLAN_REQUIRED";
 
 /// The message every variant carries.
 fn message_of(error: &Error) -> &str {
@@ -80,6 +95,14 @@ pub fn error_code(error: &Error) -> Option<&str> {
             .chars()
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
     well_formed.then_some(code)
+}
+
+/// Whether `error` is the hosted backend refusing a feature the account's
+/// plan does not include. Not a credential fault: the host keeps the session
+/// and shows an upgrade path.
+#[must_use]
+pub fn is_plan_required(error: &Error) -> bool {
+    error.is_plan_required()
 }
 
 #[cfg(test)]

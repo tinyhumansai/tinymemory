@@ -2,7 +2,7 @@
 //! envelope.
 
 use super::*;
-use crate::cortex::error::error_code;
+use crate::cortex::error::{error_code, is_plan_required};
 
 #[test]
 fn a_rustls_handshake_abort_is_named_tls_not_connect() {
@@ -287,4 +287,33 @@ fn an_unusable_error_code_falls_back_to_the_other_key() {
         r#"{"errorCode":"FIRST","error_code":"SECOND"}"#,
     );
     assert_eq!(error_code(&error), Some("FIRST"));
+}
+
+/// tinyhumansai/openhuman#8081: a plan refusal and a plain 403 must not read
+/// as an expired session, which a host signs the user out on.
+#[test]
+fn only_a_hosted_401_says_the_session_expired() {
+    let body = r#"{"success":false,"error":"memory is not included in this account's plan","errorCode":"MEMORY_PLAN_REQUIRED"}"#;
+    let plan = hosted_status_error("api.example", "memory/scopes", StatusCode::FORBIDDEN, body);
+    assert!(matches!(plan, Error::Unauthorized(_)), "{plan:?}");
+    assert!(is_plan_required(&plan));
+    assert_eq!(error_code(&plan), Some("MEMORY_PLAN_REQUIRED"));
+    assert!(
+        plan.to_string()
+            .contains("not included in this account's plan")
+    );
+    assert!(!plan.to_string().contains("session expired"), "{plan}");
+
+    let refused = hosted_status_error("h", "memory/scopes", StatusCode::FORBIDDEN, "{}");
+    assert!(matches!(refused, Error::Unauthorized(_)), "{refused:?}");
+    assert!(!is_plan_required(&refused));
+    assert!(refused.to_string().contains("refused"));
+    assert!(
+        !refused.to_string().contains("session expired"),
+        "{refused}"
+    );
+
+    let expired = hosted_status_error("h", "memory/scopes", StatusCode::UNAUTHORIZED, "{}");
+    assert!(matches!(expired, Error::Unauthorized(_)));
+    assert!(expired.to_string().contains("session expired"), "{expired}");
 }

@@ -46,7 +46,7 @@ From `tinymemory_integrations::cortex`:
   `CORTEX_API_ENDPOINT`, `TINYHUMANS_API_ENDPOINT`, `cortexdb_descriptor()`,
   `tinyhumans_descriptor()`, `proxied_descriptor()`
 - `Error`/`Result` (the contract's own `tinymemory_api::Error`),
-  `error_code`
+  `error_code`, `is_plan_required`
 
 Beyond the contract's reads and writes, the engine consolidates: Direct
 posts `v1/beliefs/build` once per held scope a `ConsolidateRequest` admits
@@ -81,7 +81,8 @@ cortex/
 │                   visibility waits, forget
 ├── transport/      HttpClient: timeouts, retries, byte caps, failure mapping,
 │                   the actor header
-├── error/          the contract's Error and hosted error_code extraction
+├── error/          the contract's Error, hosted error_code extraction,
+│                   is_plan_required
 └── testing/        loopback doubles of every wire (cfg(test) only)
 ```
 
@@ -346,7 +347,15 @@ These were measured against a live CortexDB by the v1 adapter. The doubles in
 - Hosted failures carry the backend's `errorCode` as a `[CODE] ` message
   prefix. **402 with `[USER_INSUFFICIENT_CREDITS]` is `InsufficientCredits`**:
   it is not transient and not a credential fault. The typed variant lets a
-  host show a top-up prompt without classifying message text.
+  host show a top-up prompt without classifying message text. **A
+  `*_PLAN_REQUIRED` code (`MEMORY_PLAN_REQUIRED`, sent as 403) is
+  `Unauthorized` with `is_plan_required() == true`**: it is an account-wide
+  refusal, not transient or a credential fault, so generic consumers stop
+  retries and hosts can offer an upgrade instead of signing the user in again.
+  This keeps the existing error variant source-compatible for downstream
+  exhaustive matches.
+  Only a hosted 401 says the session expired; a plain 403 says the request was
+  refused.
 - Reads (listings, recall) are retried 3 times with 250ms·2ⁿ backoff on
   `Unavailable`. Writes are sent once.
 - Hosted writes carry a random `Idempotency-Key` claim, reused across that

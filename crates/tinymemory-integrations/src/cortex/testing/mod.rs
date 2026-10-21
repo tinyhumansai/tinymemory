@@ -175,7 +175,7 @@ pub(crate) type Shared = Arc<Double>;
 /// Decrements `counter` if positive; whether a unit was taken.
 pub(crate) fn take_one(counter: &AtomicUsize) -> bool {
     counter
-        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+        .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
         .is_ok()
 }
 

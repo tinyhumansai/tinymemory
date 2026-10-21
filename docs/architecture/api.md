@@ -155,10 +155,16 @@ identifies failures that apply to every request on the account.
 `get` of an unknown id is **not** an error: the id is left out of the result.
 
 Stable `code()` values are `MEMORY_OFF`, `UNSUPPORTED`, `INVALID_REQUEST`,
-`UNAUTHORIZED`, `INSUFFICIENT_CREDITS`, `UNAVAILABLE`, and `ENGINE`. `Off`,
-`Unauthorized`, and `InsufficientCredits` are account-wide. `Unavailable` is
-transient, but its generic request-level error carries no proof of an
-account-wide outage.
+`UNAUTHORIZED`, `INSUFFICIENT_CREDITS`, `PLAN_REQUIRED`, `UNAVAILABLE`, and
+`ENGINE`. `Off`, `Unauthorized`, and `InsufficientCredits` are account-wide.
+`Unavailable` is transient, but its generic request-level error carries no
+proof of an account-wide outage. A hosted authorization message with a
+`*_PLAN_REQUIRED` code has stable code `PLAN_REQUIRED` and
+`Error::is_plan_required() == true`, while retaining the existing
+`Unauthorized` variant so downstream exhaustive matches remain source-compatible.
+
+`Error` is public and exhaustive. Adding a variant breaks downstream exhaustive
+matches; a release that includes a new variant must use a major version bump.
 
 `Result<T>` is `std::result::Result<T, Error>`. The conformance feature has
 its own `conformance::Error` (`Check` and `Engine` variants) naming the check

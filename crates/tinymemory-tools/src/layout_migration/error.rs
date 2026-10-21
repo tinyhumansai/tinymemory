@@ -41,7 +41,8 @@ impl Error {
     }
 
     /// Whether this is known to refuse every request on the account, not just
-    /// this one: memory off, a rejected credential, or no credits. An
+    /// this one: memory off, a rejected credential, no credits, or a plan
+    /// that excludes the feature. An
     /// [`EngineError::Unavailable`] may be request-scoped, so it does not stop
     /// a loop over items from trying the remaining items.
     #[must_use]

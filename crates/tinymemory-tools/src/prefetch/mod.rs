@@ -75,7 +75,7 @@ impl WorkerPool {
 
     fn try_acquire(&self) -> Option<Permit> {
         self.free
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |free| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |free| {
                 free.checked_sub(1)
             })
             .ok()

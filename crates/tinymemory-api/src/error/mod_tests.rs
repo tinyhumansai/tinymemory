@@ -61,6 +61,21 @@ fn errors_have_stable_host_codes_and_account_wide_classification() {
 }
 
 #[test]
+fn hosted_plan_refusal_uses_the_existing_unauthorized_variant() {
+    let plan = Error::Unauthorized(
+        "[MEMORY_PLAN_REQUIRED] memory is not included in this account's plan".into(),
+    );
+    assert_eq!(plan.code(), "PLAN_REQUIRED");
+    assert!(plan.is_account_wide());
+    assert!(plan.is_plan_required());
+
+    let credential = Error::Unauthorized("[UNAUTHORIZED] session expired".into());
+    assert_eq!(credential.code(), "UNAUTHORIZED");
+    assert!(credential.is_account_wide());
+    assert!(!credential.is_plan_required());
+}
+
+#[test]
 fn request_timeouts_and_rate_limits_are_transient_not_account_wide() {
     for message in ["request timed out", "rate limited"] {
         let error = Error::Unavailable(message.into());

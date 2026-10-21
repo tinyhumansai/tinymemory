@@ -11,8 +11,8 @@
 //! An engine that cannot consolidate answers [`JobOutcome::Skipped`], so the
 //! same queue runs on every engine; a hosted engine builds on its own
 //! schedule ([`JobOutcome::Scheduled`]). A failing job is kept with its error
-//! and retried up to [`MAX_ATTEMPTS`] times; an account-wide refusal never
-//! counts as an attempt.
+//! and retried up to [`MAX_ATTEMPTS`] times; an account-wide refusal, including
+//! a hosted plan refusal, never counts as an attempt.
 //!
 //! The crate links no executor and does no I/O: the host supplies the
 //! [`QueueStore`] and decides when [`JobQueue::run`] is called.

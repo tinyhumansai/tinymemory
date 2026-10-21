@@ -21,7 +21,7 @@ exclude = ["worktrees"]
 # Shared by every crate. The release workflow bumps `version` here, so all
 # workspace packages carry the same version and one tag names all of them.
 [workspace.package]
-version = "2.0.0"
+version = "2.0.1"
 edition = "2024"
 rust-version = "1.96"
 license = "GPL-3.0-only"
