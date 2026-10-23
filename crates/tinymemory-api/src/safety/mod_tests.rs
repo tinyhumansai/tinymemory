@@ -9,7 +9,7 @@
 //! * detection is deterministic + offline (no external egress on classify),
 //! * category identifiers serialize to stable snake_case strings.
 
-use super::rules::{is_ipv4, is_luhn_valid};
+use super::rules::{is_complete_card, is_ipv4, is_luhn_valid};
 use super::*;
 
 // ---------------------------------------------------------------------------
@@ -45,6 +45,43 @@ fn detects_valid_credit_card() {
         assert!(r.has_category(PiiCategory::CreditCard), "missed in {raw:?}");
         assert_eq!(r.level, RiskLevel::High);
     }
+}
+
+#[test]
+fn detects_card_with_adjacent_cvv_group() {
+    // A CVV is often written right after the card, with the same separator.
+    // The run is PAN + CVV; the PAN still has to pass Luhn on its own.
+    for raw in [
+        "4111 1111 1111 1111 123",
+        "4111-1111-1111-1111-123",
+        "card 4111 1111 1111 1111 1234 exp 12/26",
+    ] {
+        let r = scan(raw);
+        assert!(r.has_category(PiiCategory::CreditCard), "missed in {raw:?}");
+        assert_eq!(r.level, RiskLevel::High, "{raw:?}");
+        assert_eq!(
+            r.hits,
+            vec![CategoryHit {
+                category: PiiCategory::CreditCard,
+                count: 1
+            }],
+            "{raw:?}"
+        );
+    }
+}
+
+#[test]
+fn detects_card_with_labelled_cvv() {
+    // A label between the card and its CVV ends the run at the card, so the
+    // PAN is judged on its own and counted once.
+    let r = scan("card 4111 1111 1111 1111 cvv 123");
+    assert_eq!(
+        r.hits,
+        vec![CategoryHit {
+            category: PiiCategory::CreditCard,
+            count: 1
+        }]
+    );
 }
 
 #[test]
@@ -158,6 +195,26 @@ fn luhn_invalid_number_is_not_a_card() {
         !r.has_category(PiiCategory::CreditCard),
         "Luhn-invalid number flagged as card: {r:?}"
     );
+}
+
+#[test]
+fn overlong_card_candidate_is_not_matched_on_its_head() {
+    // 4111 1111 1111 1111 003 happens to be a Luhn-valid 19-digit run, but it
+    // is the head of something longer. The run is judged as a unit: a card
+    // that continues past 19 digits, or past one adjacent CVV group, is not
+    // a card at all rather than a card that stops where Luhn happens to pass.
+    for raw in [
+        "4111 1111 1111 1111 003-1",
+        "4111 1111 1111 1111 1111 1111",
+        "41111111111111110031",
+        "4111 1111 1111 1111 12",
+    ] {
+        let r = scan(raw);
+        assert!(
+            !r.has_category(PiiCategory::CreditCard),
+            "head of an overlong run flagged as card in {raw:?}: {r:?}"
+        );
+    }
 }
 
 #[test]
@@ -310,6 +367,25 @@ fn luhn_validator_accepts_known_good_and_rejects_bad() {
 }
 
 #[test]
+fn complete_card_validator_accepts_pan_or_pan_with_cvv_group() {
+    // A complete PAN, grouped or not.
+    assert!(is_complete_card("4111111111111111"));
+    assert!(is_complete_card("4111 1111 1111 1111"));
+    // A complete PAN followed by one adjacent group of 3–4 digits.
+    assert!(is_complete_card("4111 1111 1111 1111 123"));
+    assert!(is_complete_card("4111-1111-1111-1111-1234"));
+    // The whole run is Luhn-valid at 19 digits: a complete PAN as written.
+    assert!(is_complete_card("4111 1111 1111 1111 003"));
+    // Luhn-invalid PAN with a CVV-shaped tail.
+    assert!(!is_complete_card("1234 5678 9012 3456 123"));
+    // Tail that is not a CVV group: too short, too long, or ungrouped.
+    assert!(!is_complete_card("4111 1111 1111 1111 12"));
+    assert!(!is_complete_card("4111 1111 1111 1111 12345"));
+    assert!(!is_complete_card("4111 1111 1111 1111 003-1"));
+    assert!(!is_complete_card("41111111111111110031"));
+}
+
+#[test]
 fn ipv4_validator_bounds_octets() {
     assert!(is_ipv4("192.168.0.1"));
     assert!(is_ipv4("255.255.255.255"));
@@ -332,6 +408,32 @@ fn redact_identifiers_replaces_structured_values_only() {
     assert!(out.contains("[redacted]"), "{out}");
     // Topical keywords are context, not identifiers: kept.
     assert!(out.contains("patient"), "{out}");
+}
+
+#[test]
+fn redact_identifiers_replaces_the_whole_card_span() {
+    // An adjacent CVV group belongs to the card: the span is replaced whole.
+    assert_eq!(
+        redact_identifiers("pay with 4111 1111 1111 1111 123 today"),
+        "pay with [redacted] today"
+    );
+    // A labelled CVV ends the run at the card; only the card is structured.
+    assert_eq!(
+        redact_identifiers("card 4111 1111 1111 1111 cvv 123"),
+        "card [redacted] cvv 123"
+    );
+}
+
+#[test]
+fn redact_identifiers_leaves_an_overlong_card_candidate_whole() {
+    // Neither a partial replacement of a Luhn-valid head nor any other
+    // change: the run is not a card, so it is left exactly as written.
+    for text in [
+        "ref 4111 1111 1111 1111 003-1 noted",
+        "ref 4111 1111 1111 1111 1111 1111 noted",
+    ] {
+        assert_eq!(redact_identifiers(text), text);
+    }
 }
 
 #[test]
