@@ -135,10 +135,13 @@ fn build_rules() -> Vec<Rule> {
             None,
         ),
         // US-style phone number (3-3-4 groups, requires a separator so it
-        // doesn't swallow arbitrary 10-digit numbers).
+        // doesn't swallow arbitrary 10-digit numbers). A leading `+1` is part
+        // of the number: `\b` cannot sit between a space and the `+`, so the
+        // alternation lets the match start on the `+` itself and redaction
+        // takes the whole value rather than leaving a stray `+` behind.
         pattern_rule(
             PiiCategory::PhoneNumber,
-            r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b",
+            r"(?:\+|\b)(?:1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b",
             None,
         ),
         // Legacy international phone-like pattern. Its repetition counts
