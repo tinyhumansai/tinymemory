@@ -1,8 +1,12 @@
 use super::*;
 
+use std::future::Future;
 use std::sync::Mutex as StdMutex;
+use std::task::Poll;
 
 use crate::list_store::MemoryListStore;
+use futures::channel::oneshot;
+use futures::future::poll_fn;
 
 fn thread(id: &str) -> PendingDeletion {
     PendingDeletion::Thread {
@@ -22,7 +26,7 @@ struct Engine {
 
 #[async_trait]
 impl DeletionExecutor for Engine {
-    fn is_reachable(&self) -> bool {
+    async fn is_reachable(&self) -> bool {
         self.reachable
     }
     async fn run(&self, deletion: &PendingDeletion) -> Result<usize, String> {
@@ -32,6 +36,27 @@ impl DeletionExecutor for Engine {
         } else {
             Ok(1)
         }
+    }
+}
+
+struct DeferredReachability {
+    release: StdMutex<Option<oneshot::Receiver<()>>>,
+    ran: StdMutex<Vec<PendingDeletion>>,
+}
+
+#[async_trait]
+impl DeletionExecutor for DeferredReachability {
+    async fn is_reachable(&self) -> bool {
+        let release = self.release.lock().unwrap().take();
+        if let Some(release) = release {
+            let _ = release.await;
+        }
+        true
+    }
+
+    async fn run(&self, deletion: &PendingDeletion) -> Result<usize, String> {
+        self.ran.lock().unwrap().push(deletion.clone());
+        Ok(1)
     }
 }
 
@@ -62,6 +87,29 @@ async fn nothing_runs_while_the_engine_is_unreachable() {
     assert_eq!(queue.drain(&engine, Drain::Force, Utc::now()).await, 0);
     assert!(engine.ran.lock().unwrap().is_empty());
     assert_eq!(queue.pending(), vec![thread("t")]);
+}
+
+#[tokio::test]
+async fn drain_awaits_async_reachability_before_running_deletions() {
+    let queue = queue();
+    queue.enqueue(thread("t"));
+    let (release, wait) = oneshot::channel();
+    let engine = DeferredReachability {
+        release: StdMutex::new(Some(wait)),
+        ran: StdMutex::new(Vec::new()),
+    };
+    let mut drain = Box::pin(queue.drain(&engine, Drain::Force, Utc::now()));
+
+    poll_fn(|cx| match drain.as_mut().poll(cx) {
+        Poll::Pending => Poll::Ready(()),
+        Poll::Ready(_) => panic!("drain completed before async reachability resolved"),
+    })
+    .await;
+    assert!(engine.ran.lock().unwrap().is_empty());
+
+    release.send(()).unwrap();
+    assert_eq!(drain.await, 1);
+    assert_eq!(engine.ran.lock().unwrap().as_slice(), &[thread("t")]);
 }
 
 #[tokio::test]

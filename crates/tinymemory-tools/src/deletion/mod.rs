@@ -88,7 +88,7 @@ impl Backoff {
 pub trait DeletionExecutor: Send + Sync {
     /// Whether the engine can be reached at all. When not, a drain stops
     /// before running anything.
-    fn is_reachable(&self) -> bool;
+    async fn is_reachable(&self) -> bool;
 
     /// Runs `deletion`, returning how many items went.
     ///
@@ -252,7 +252,7 @@ impl<S: ListStore<PendingDeletion>> DeletionQueue<S> {
         if queued.is_empty() {
             return 0;
         }
-        if !executor.is_reachable() {
+        if !executor.is_reachable().await {
             log::debug!(
                 "[tinymemory:deletion] memory off; {} pending deletions wait",
                 queued.len()

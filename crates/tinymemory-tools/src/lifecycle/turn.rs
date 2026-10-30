@@ -56,13 +56,14 @@ pub trait Clock: Send + Sync {
 }
 
 /// Resolves the configured engine and identity to their lifecycle instance.
+#[async_trait]
 pub trait EngineResolver: Send + Sync {
     /// Returns the configured memory instance for this host hook.
     ///
     /// # Errors
     ///
     /// Returns the host's engine or identity resolution failure.
-    fn resolve(&self) -> tinymemory_api::Result<AgentMemory>;
+    async fn resolve(&self) -> tinymemory_api::Result<AgentMemory>;
 }
 
 /// Receives background jobs returned by a successful post-turn log.
@@ -310,7 +311,7 @@ impl TurnHooks {
         let work_clock = clock.clone();
         let model = self.date_hint_model.clone();
         let operation = async move {
-            let mut memory = resolver.resolve().ok()?;
+            let mut memory = resolver.resolve().await.ok()?;
             if deadline.is_some_and(|deadline| work_clock.now() >= deadline) {
                 return None;
             }
@@ -430,7 +431,7 @@ impl TurnHooks {
         if !logging {
             return;
         }
-        let Ok(memory) = self.resolver.resolve() else {
+        let Ok(memory) = self.resolver.resolve().await else {
             return;
         };
         let Ok(report) = memory.post_turn(turn).await else {
@@ -486,7 +487,7 @@ impl TurnHooks {
         let resolver = self.resolver.clone();
         let clock = self.clock.clone();
         let operation = async move {
-            let memory = resolver.resolve().ok()?;
+            let memory = resolver.resolve().await.ok()?;
             if deadline.is_some_and(|deadline| clock.now() >= deadline) {
                 return None;
             }
