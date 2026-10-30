@@ -170,8 +170,17 @@ pub(crate) fn plausible_card_number(d: &[u32]) -> bool {
 
 // IBAN mod-97. Steps: strip spaces, move first 4 chars to end, expand letters
 // (A=10..Z=35), divide as a big-integer mod 97, require remainder == 1.
+//
+// `IBAN_RE` matches with Unicode `\d`, so a candidate can carry digits from
+// another script (Devanagari `४`, Bengali `৪`, ...) that normalization does
+// not fold. An IBAN is ASCII by definition, so anything else is rejected
+// before the byte-offset slicing below, which would otherwise split a
+// multi-byte digit and panic.
 pub(crate) fn valid_iban(s: &str) -> bool {
     let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    if !cleaned.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return false;
+    }
     if cleaned.len() < 15 || cleaned.len() > 34 {
         return false;
     }
