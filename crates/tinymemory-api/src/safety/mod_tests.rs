@@ -177,6 +177,43 @@ fn phone_shaped_ssn_not_double_counted_as_ssn() {
     assert!(!r.has_category(PiiCategory::NationalId));
 }
 
+fn count_of(r: &PiiScanResult, category: PiiCategory) -> usize {
+    r.hits
+        .iter()
+        .find(|hit| hit.category == category)
+        .map_or(0, |hit| hit.count)
+}
+
+#[test]
+fn a_value_matched_by_two_rules_counts_once() {
+    // `+1 415-555-0100` is both a US-format and an international phone
+    // number. It is one identifier, so it is one hit.
+    let r = scan("call +1 415-555-0100");
+    assert_eq!(count_of(&r, PiiCategory::PhoneNumber), 1, "{r:?}");
+    assert_eq!(r.level, RiskLevel::Low);
+}
+
+#[test]
+fn distinct_values_in_one_category_each_count() {
+    let r = scan("+1 415-555-0100, 415-555-0199 or +44 20 7946 0958");
+    assert_eq!(count_of(&r, PiiCategory::PhoneNumber), 3, "{r:?}");
+    // The same value written twice is two occurrences.
+    let r = scan("415-555-0100 then again 415-555-0100");
+    assert_eq!(count_of(&r, PiiCategory::PhoneNumber), 2, "{r:?}");
+}
+
+#[test]
+fn a_doubly_matched_value_is_redacted_whole() {
+    assert_eq!(
+        redact_identifiers("call +1 415-555-0100 now"),
+        "call [redacted] now"
+    );
+    assert_eq!(
+        redact_identifiers("call +1 415.555.1234 now"),
+        "call [redacted] now"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Risk-level escalation
 // ---------------------------------------------------------------------------
