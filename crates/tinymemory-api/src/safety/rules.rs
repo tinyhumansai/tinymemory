@@ -3,8 +3,8 @@
 //! Two flavours of rule, both compiled once into a process-wide static:
 //!
 //! * **Pattern rules** — a [`Regex`] plus an optional structural `validator`
-//!   (Luhn for cards, octet range for IPv4) that rejects shape-matches that
-//!   aren't actually valid identifiers.
+//!   (Luhn and complete-card grouping for cards, octet range for IPv4) that
+//!   rejects shape-matches that aren't actually valid identifiers.
 //! * **Keyword rules** — an alternation of domain terms wrapped in word
 //!   boundaries, used for the topical categories (medical / legal / financial /
 //!   family) where there is no single canonical value shape.
@@ -86,6 +86,23 @@ pub(crate) fn is_luhn_valid(raw: &str) -> bool {
     sum.is_multiple_of(10)
 }
 
+/// Accept a run of digits and single separators as a payment card only when
+/// it is complete as written: either a PAN of 13–19 digits that passes Luhn,
+/// or such a PAN followed by one adjacent group of 3–4 digits after the last
+/// separator, the way a CVV is written next to the card it belongs to. The
+/// run is judged as a unit — the whole run first, then the split at its last
+/// separator — so a Luhn-valid head of something longer is not a card, and
+/// an unlabelled CVV is set beside the PAN rather than folded into it.
+pub(crate) fn is_complete_card(raw: &str) -> bool {
+    if is_luhn_valid(raw) {
+        return true;
+    }
+    let Some((pan, cvv)) = raw.rsplit_once([' ', '-']) else {
+        return false;
+    };
+    (3..=4).contains(&cvv.len()) && cvv.bytes().all(|b| b.is_ascii_digit()) && is_luhn_valid(pan)
+}
+
 /// Validate that a dotted-quad match is a real IPv4 address (each octet 0–255).
 pub(crate) fn is_ipv4(raw: &str) -> bool {
     let octets: Vec<&str> = raw.split('.').collect();
@@ -121,12 +138,18 @@ fn build_rules() -> Vec<Rule> {
             r"\b\d{3}[-\s]\d{2}[-\s]\d{4}\b",
             None,
         ),
-        // Payment card: 13–19 digits with optional single separators, then
-        // Luhn-validated so version strings / IDs don't false-positive.
+        // Payment card: a run of 13 or more digits with at most one space or
+        // hyphen between any two of them. The pattern has no upper bound on
+        // purpose: it consumes the whole run so the validator can judge it as
+        // a unit — a complete 13–19 digit PAN that passes Luhn, or one with a
+        // single adjacent 3–4 digit CVV group after its last separator — and
+        // an overlong run is left alone rather than matched on a Luhn-valid
+        // head that happens to end at a separator. Redaction replaces the
+        // whole span, CVV group included.
         pattern_rule(
             PiiCategory::CreditCard,
-            r"\b\d(?:[ -]?\d){12,18}\b",
-            Some(is_luhn_valid),
+            r"\b\d(?:[ -]?\d){12,}\b",
+            Some(is_complete_card),
         ),
         // IBAN bank account: 2-letter country + 2 check digits + 11–30 alnum.
         pattern_rule(
