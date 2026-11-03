@@ -9,7 +9,7 @@
 //! * detection is deterministic + offline (no external egress on classify),
 //! * category identifiers serialize to stable snake_case strings.
 
-use super::rules::{is_ipv4, is_luhn_valid};
+use super::rules::{has_international_phone_digit_count, is_ipv4, is_luhn_valid};
 use super::*;
 
 // ---------------------------------------------------------------------------
@@ -68,6 +68,80 @@ fn detects_phone_numbers_varied_formats() {
             "missed in {raw:?}"
         );
     }
+}
+
+#[test]
+fn international_phone_numbers_carry_seven_to_fifteen_digits() {
+    for raw in [
+        "+1234567",
+        "+123456789012345",
+        "+44 20 7946 0958",
+        "+1-415-555-0100",
+    ] {
+        let r = scan(raw);
+        assert!(r.has_category(PiiCategory::PhoneNumber), "missed {raw:?}");
+    }
+    for raw in [
+        "+123456",
+        "+1234567890123456",
+        "+123456789012345678",
+        "+1      2",
+    ] {
+        let r = scan(raw);
+        assert!(
+            !r.has_category(PiiCategory::PhoneNumber),
+            "flagged {raw:?}: {r:?}"
+        );
+    }
+}
+
+#[test]
+fn an_overlong_number_is_not_matched_on_a_prefix() {
+    // 18 digits: no 15-digit (or shorter) head of it may count as a phone
+    // number, so the value is reported clean and left as written.
+    let text = "ref +123456789012345678 end";
+    assert_eq!(scan(text).level, RiskLevel::None);
+    assert_eq!(redact_identifiers(text), text);
+}
+
+#[test]
+fn an_overlong_separated_number_is_not_matched_on_a_prefix() {
+    // 16 digits with a separator after the fifteenth: the rule must consume
+    // the whole run and reject it, not stop at the separator and accept the
+    // 15-digit head.
+    for text in [
+        "ref +123456789012345-6 end",
+        "ref +123456789012345 6 end",
+        "ref +1-234-567-890-123-456 end",
+    ] {
+        assert_eq!(scan(text).level, RiskLevel::None, "flagged {text:?}");
+        assert_eq!(redact_identifiers(text), text);
+    }
+}
+
+#[test]
+fn international_phone_separators_do_not_span_lines_or_tabs() {
+    // Only a space or a hyphen joins two digit groups. A newline or a tab
+    // ends the candidate, so two short runs on separate lines are not glued
+    // into one phone number.
+    for text in ["+1234\n567", "+1234\t567", "+123 456\n789 012"] {
+        assert!(
+            !scan(text).has_category(PiiCategory::PhoneNumber),
+            "flagged {text:?}"
+        );
+    }
+}
+
+#[test]
+fn international_phone_redaction_covers_the_whole_number() {
+    assert_eq!(
+        redact_identifiers("call +44 20 7946 0958 now"),
+        "call [redacted] now"
+    );
+    assert_eq!(
+        redact_identifiers("call +123456789012345 now"),
+        "call [redacted] now"
+    );
 }
 
 #[test]
@@ -307,6 +381,14 @@ fn luhn_validator_accepts_known_good_and_rejects_bad() {
     assert!(is_luhn_valid("4111 1111 1111 1111"));
     assert!(!is_luhn_valid("1234567890123456"));
     assert!(!is_luhn_valid("12345")); // too short
+}
+
+#[test]
+fn international_phone_validator_bounds_digit_count() {
+    assert!(has_international_phone_digit_count("+1234567"));
+    assert!(has_international_phone_digit_count("+1 234 567 890 123 45"));
+    assert!(!has_international_phone_digit_count("+123456"));
+    assert!(!has_international_phone_digit_count("+1234567890123456"));
 }
 
 #[test]
