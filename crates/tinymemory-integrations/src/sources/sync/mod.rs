@@ -424,13 +424,21 @@ pub async fn store_placed(
 pub async fn store_all(
     engine: &dyn MemoryEngine,
     source_id: &str,
-    mut placed: Vec<(Namespace, StoreItem)>,
+    placed: Vec<(Namespace, StoreItem)>,
 ) -> Result<Stored, SyncError> {
     let mut out = Stored::default();
     let mut last_error = None;
-    while !placed.is_empty() {
-        let take = placed.len().min(STORE_CHUNK);
-        let chunk: Vec<_> = placed.drain(..take).collect();
+    // Consumed through one iterator rather than `drain(..n)`: draining the
+    // front of a `Vec` shifts every still-pending entry left, so the traversal
+    // costs O(N^2 / STORE_CHUNK) in `memmove` over a large sync — paid on
+    // exactly the syncs this batching exists to speed up. `take` moves each
+    // entry once instead.
+    let mut placed = placed.into_iter();
+    loop {
+        let chunk: Vec<_> = placed.by_ref().take(STORE_CHUNK).collect();
+        if chunk.is_empty() {
+            break;
+        }
         // Cloned because a rejected batch hands nothing back, and the
         // item-by-item retry needs the items.
         let batch: Vec<StoreItem> = chunk.iter().map(|(_, item)| item.clone()).collect();
