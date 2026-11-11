@@ -450,32 +450,66 @@ fn push_captured(
 /// ([`plausible_card_number`]) or a card keyword sits within
 /// [`CC_KEYWORD_WINDOW`] bytes.
 fn push_credit_cards(hits: &mut Vec<Hit>, norm: &str, gate: BareCardGate) {
-    if gate == BareCardGate::LuhnOnly {
-        // Strictest behaviour: every Luhn-valid run, bare or separated.
-        push_checksum(hits, norm, &CC_RE, PII_CC, valid_luhn);
-        return;
-    }
     for m in CC_RE.find_iter(norm) {
-        let s = m.as_str();
-        if !valid_luhn(s) {
-            continue;
-        }
-        // Judge bare-vs-separated on the interior of the digit run: the
-        // regex's per-digit `[\s\-]?` can capture one trailing separator
-        // (`"…773 "`), which is not the human 4-4-4-4 grouping this
-        // distinction is after.
-        let interior = s.trim_matches(|c: char| !c.is_ascii_digit());
-        let bare = interior.bytes().all(|b| b.is_ascii_digit());
-        let corroborated =
-            !bare || plausible_card_number(&digits(s)) || cc_keyword_near(norm, m.start(), m.end());
-        if corroborated {
+        if let Some((start, end)) = card_span(norm, m.start(), m.as_str(), gate) {
             hits.push(Hit {
-                start: m.start(),
-                end: m.end(),
+                start,
+                end,
                 token: PII_CC,
             });
         }
     }
+}
+
+/// The card inside one [`CC_RE`] match `run` found at byte `at` of `norm`.
+///
+/// A run that passes Luhn is the card: with [`BareCardGate::LuhnOnly`], or
+/// when it is separated, or when a bare run is corroborated. A separated run
+/// that fails Luhn as a whole may still hold a card next to other digits
+/// (`4111 1111 1111 1111 123`, `qty 2 4111 1111 1111 1111`), and `CC_RE` has
+/// no lookaround to give back the extra digits. So its contiguous digit
+/// groups are tried as windows of 13-19 digits, longest first, then leftmost.
+/// A window must pass Luhn and be corroborated under either gate, because
+/// splitting a run multiplies the chances of a chance Luhn pass.
+fn card_span(norm: &str, at: usize, run: &str, gate: BareCardGate) -> Option<(usize, usize)> {
+    // Digit groups, as byte ranges of `norm`. The regex's per-digit
+    // `[\s\-]?` can capture one trailing separator (`"…773 "`), which is
+    // not a group boundary, so groups come from the digits themselves.
+    let mut groups: Vec<(usize, usize)> = Vec::new();
+    for (i, c) in run.char_indices() {
+        let pos = at + i;
+        match (c.is_ascii_digit(), groups.last_mut()) {
+            (true, Some(last)) if last.1 == pos => last.1 = pos + 1,
+            (true, _) => groups.push((pos, pos + 1)),
+            (false, _) => {}
+        }
+    }
+    let corroborated = |start: usize, end: usize| {
+        plausible_card_number(&digits(&norm[start..end])) || cc_keyword_near(norm, start, end)
+    };
+    if valid_luhn(run) {
+        let bare = groups.len() == 1;
+        let ok = gate == BareCardGate::LuhnOnly || !bare || corroborated(at, at + run.len());
+        return ok.then_some((at, at + run.len()));
+    }
+    let mut windows: Vec<(usize, usize, usize)> = Vec::new();
+    for i in 0..groups.len() {
+        let mut len = 0;
+        for j in i..groups.len() {
+            len += groups[j].1 - groups[j].0;
+            if len > 19 {
+                break;
+            }
+            let whole = i == 0 && j == groups.len() - 1;
+            if len >= 13 && !whole {
+                windows.push((len, groups[i].0, groups[j].1));
+            }
+        }
+    }
+    windows.sort_by_key(|&(len, start, _)| (std::cmp::Reverse(len), start));
+    windows.into_iter().find_map(|(_, start, end)| {
+        (valid_luhn(&norm[start..end]) && corroborated(start, end)).then_some((start, end))
+    })
 }
 
 /// Bytes of context searched either side of a bare digit run for a card
@@ -501,8 +535,10 @@ fn cc_keyword_near(norm: &str, start: usize, end: usize) -> bool {
     CC_KEYWORD_RE.is_match(&norm[lo..hi])
 }
 
-// Sort by start asc, length desc. Then walk in order, dropping any hit whose
-// range overlaps a kept hit. Result: earlier + longer wins; no double-redact.
+// Sort by start asc, length desc. Then walk in order, merging any hit whose
+// range overlaps a kept hit into it. Result: earlier + longer keeps its token,
+// and a partial overlap's tail is still covered (fails closed); no
+// double-redact.
 fn dedupe_overlaps(hits: &mut Vec<Hit>) {
     hits.sort_by(|a, b| {
         a.start
@@ -511,9 +547,9 @@ fn dedupe_overlaps(hits: &mut Vec<Hit>) {
     });
     let mut kept: Vec<Hit> = Vec::with_capacity(hits.len());
     for h in hits.drain(..) {
-        let overlaps = kept.last().is_some_and(|k| h.start < k.end);
-        if !overlaps {
-            kept.push(h);
+        match kept.last_mut() {
+            Some(k) if h.start < k.end => k.end = k.end.max(h.end),
+            _ => kept.push(h),
         }
     }
     *hits = kept;

@@ -21,6 +21,10 @@ use std::time::{Duration, Instant};
 
 use futures::future::{BoxFuture, Either, select};
 
+mod turn_cache;
+
+pub use turn_cache::{TurnCache, TurnCacheRegistry};
+
 /// The executor a [`Prefetcher`] runs its workers on.
 pub trait PrefetchRuntime: Send + Sync {
     /// Runs `task` in the background, with whatever scope the host needs
@@ -70,14 +74,24 @@ impl WorkerPool {
     }
 
     fn try_acquire(&self) -> Option<Permit> {
-        self.free
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |free| {
-                free.checked_sub(1)
-            })
-            .ok()
-            .map(|_| Permit {
-                free: self.free.clone(),
-            })
+        // A compare_exchange loop rather than `fetch_update`: that method is
+        // deprecated in favour of `try_update` on newer toolchains, but
+        // `try_update` is not stable on this crate's MSRV.
+        let mut free = self.free.load(Ordering::Acquire);
+        loop {
+            let next = free.checked_sub(1)?;
+            match self
+                .free
+                .compare_exchange_weak(free, next, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => {
+                    return Some(Permit {
+                        free: self.free.clone(),
+                    });
+                }
+                Err(actual) => free = actual,
+            }
+        }
     }
 
     /// Workers not running a refresh.

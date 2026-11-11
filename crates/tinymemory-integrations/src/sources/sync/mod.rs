@@ -23,7 +23,11 @@ use std::collections::{BTreeSet, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use chrono::{DateTime, Duration, Utc};
-use tinymemory_api::{MAX_STORE_MANY, MemoryEngine, Namespace, StoreItem};
+use tinymemory_api::{
+    ConsolidateRequest, Consolidation, ItemKind, MAX_STORE_MANY, MemoryEngine, Namespace, Reach,
+    Result as ApiResult, StoreItem,
+};
+use tinymemory_tools::BackgroundJob;
 
 use super::types::{MemorySourceEntry, SourceKind};
 
@@ -34,9 +38,6 @@ pub const MIN_SCHEDULE_MINS: u32 = 15;
 /// at [`MAX_STORE_MANY`]; sitting at the cap is what makes the request count
 /// `ceil(N / 100)` instead of `N`.
 pub const STORE_CHUNK: usize = MAX_STORE_MANY;
-
-/// The credit-exhaustion code the hosted engine puts on its message.
-const INSUFFICIENT_CREDITS_CODE: &str = "USER_INSUFFICIENT_CREDITS";
 
 /// Why a sync failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -54,26 +55,14 @@ pub enum SyncError {
 
 impl SyncError {
     /// Whether the failure is about the account, not the item: out of
-    /// credits, signed out, or the engine unreachable. Retrying siblings
+    /// credits, not in the plan, signed out, or the engine unreachable. Retrying siblings
     /// would fail the same way, so a sync stops on it.
     #[must_use]
     pub fn is_account_wide(&self) -> bool {
         match self {
-            Self::Engine(error) => engine_error_is_account_wide(error),
+            Self::Engine(error) => error.is_account_wide(),
             _ => false,
         }
-    }
-}
-
-fn engine_error_is_account_wide(error: &tinymemory_api::Error) -> bool {
-    use tinymemory_api::Error as E;
-    match error {
-        E::Unauthorized(_) | E::Unavailable(_) => true,
-        E::Engine(message) => message
-            .strip_prefix('[')
-            .and_then(|rest| rest.split_once("] "))
-            .is_some_and(|(code, _)| code == INSUFFICIENT_CREDITS_CODE),
-        _ => false,
     }
 }
 
@@ -118,7 +107,8 @@ pub struct SyncState {
 pub enum SyncUpdate {
     /// A run was claimed and is starting.
     Started,
-    /// A run stored `items` and ended at `at`.
+    /// A run stored `items` and ended at `at`. Every item is listed by
+    /// then; ranked recall can trail by an index refresh (see [`store_all`]).
     Finished {
         /// Items stored.
         items: u64,
@@ -365,14 +355,68 @@ pub struct Stored {
     pub stored: u64,
     /// Items the engine refused one by one.
     pub failed: u64,
-    /// The nodes that received at least one item, for the host's belief
-    /// builds.
+    /// The nodes that received at least one item.
     pub touched: BTreeSet<Namespace>,
+}
+
+/// What [`store_placed`] stored and the host can schedule afterward.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Placed {
+    /// Store result, including nodes that accepted items.
+    pub stored: Stored,
+    /// One exact-node belief build for each node touched by an on-demand
+    /// engine; empty for other consolidation modes.
+    pub jobs: Vec<BackgroundJob>,
+}
+
+/// Places each item with the host's callback, stores it, and returns belief
+/// jobs for accepted nodes when the engine consolidates on demand. The host
+/// owns the callback and decides how to enqueue returned jobs.
+///
+/// # Errors
+///
+/// Placement failures and the errors from [`store_all`].
+pub async fn store_placed(
+    engine: &dyn MemoryEngine,
+    source_id: &str,
+    items: Vec<StoreItem>,
+    mut placement: impl FnMut(&StoreItem) -> ApiResult<Namespace>,
+) -> Result<Placed, SyncError> {
+    let mut placed = Vec::with_capacity(items.len());
+    for item in items {
+        let node = placement(&item).map_err(|error| SyncError::Invalid(error.to_string()))?;
+        placed.push((
+            node.clone(),
+            tinymemory_tools::layout::placement::file_into(node, item),
+        ));
+    }
+    let stored = store_all(engine, source_id, placed).await?;
+    let jobs = if engine.descriptor().consolidation == Consolidation::OnDemand {
+        stored
+            .touched
+            .iter()
+            .cloned()
+            .map(|node| BackgroundJob::BuildBeliefs {
+                request: ConsolidateRequest::new(Reach::exact(node)).kinds([ItemKind::Document]),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok(Placed { stored, jobs })
 }
 
 /// Stores items already placed at their node on `engine`, [`STORE_CHUNK`] at
 /// a time. A refused batch is retried item by item, so one invalid item costs
 /// only itself; an account-wide refusal stops the sync.
+///
+/// On return every stored item is listed, but not necessarily recallable:
+/// the Cortex engines' `store_many` waits for ranked recall only on each
+/// batch's final event, so earlier items of a batch can show in listings
+/// before ranked recall finds them, until the engine's index refreshes. That
+/// is the price of waiting once per batch instead of once per item, the same
+/// price a batched import pays. Items stored one by one after a refused batch
+/// are each recall-awaited. See tinyhumansai/openhuman#7474.
 ///
 /// # Errors
 ///
@@ -380,13 +424,21 @@ pub struct Stored {
 pub async fn store_all(
     engine: &dyn MemoryEngine,
     source_id: &str,
-    mut placed: Vec<(Namespace, StoreItem)>,
+    placed: Vec<(Namespace, StoreItem)>,
 ) -> Result<Stored, SyncError> {
     let mut out = Stored::default();
     let mut last_error = None;
-    while !placed.is_empty() {
-        let take = placed.len().min(STORE_CHUNK);
-        let chunk: Vec<_> = placed.drain(..take).collect();
+    // Consumed through one iterator rather than `drain(..n)`: draining the
+    // front of a `Vec` shifts every still-pending entry left, so the traversal
+    // costs O(N^2 / STORE_CHUNK) in `memmove` over a large sync — paid on
+    // exactly the syncs this batching exists to speed up. `take` moves each
+    // entry once instead.
+    let mut placed = placed.into_iter();
+    loop {
+        let chunk: Vec<_> = placed.by_ref().take(STORE_CHUNK).collect();
+        if chunk.is_empty() {
+            break;
+        }
         // Cloned because a rejected batch hands nothing back, and the
         // item-by-item retry needs the items.
         let batch: Vec<StoreItem> = chunk.iter().map(|(_, item)| item.clone()).collect();
@@ -395,7 +447,7 @@ pub async fn store_all(
                 out.stored += receipts.len() as u64;
                 out.touched.extend(chunk.into_iter().map(|(node, _)| node));
             }
-            Err(error) if engine_error_is_account_wide(&error) => return Err(error.into()),
+            Err(error) if error.is_account_wide() => return Err(error.into()),
             Err(error) => {
                 log::debug!(
                     "[memory:sources] id={source_id} batch of {} failed ({error}); retrying item by item",
@@ -407,7 +459,7 @@ pub async fn store_all(
                             out.stored += 1;
                             out.touched.insert(node);
                         }
-                        Err(error) if engine_error_is_account_wide(&error) => {
+                        Err(error) if error.is_account_wide() => {
                             return Err(error.into());
                         }
                         Err(error) => {

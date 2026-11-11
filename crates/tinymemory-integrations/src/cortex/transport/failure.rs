@@ -8,7 +8,7 @@
 use reqwest::StatusCode;
 use serde_json::Value;
 
-use crate::cortex::error::{Error, INSUFFICIENT_CREDITS_CODE};
+use crate::cortex::error::{Error, INSUFFICIENT_CREDITS_CODE, PLAN_REQUIRED_SUFFIX};
 
 /// Longest excerpt of a backend's error text kept in a message.
 const MAX_DETAIL_CHARS: usize = 300;
@@ -112,14 +112,25 @@ fn excerpt(text: &str) -> String {
     shown
 }
 
-/// Maps a status to its variant, given the message head and detail.
-fn by_status(status: StatusCode, head: String, detail: &str) -> Error {
-    let message = if detail.is_empty() {
+/// `head`, then the backend's `detail` after a spaced em-dash when it said
+/// anything.
+fn with_detail(head: String, detail: &str) -> String {
+    if detail.is_empty() {
         head
     } else {
         format!("{head} — {detail}")
-    };
+    }
+}
+
+/// Maps a status to its variant, given the message head and detail.
+fn by_status(status: StatusCode, head: String, detail: &str) -> Error {
+    let insufficient_credits = head
+        .strip_prefix('[')
+        .and_then(|rest| rest.split_once("] "))
+        .is_some_and(|(code, _)| code == INSUFFICIENT_CREDITS_CODE);
+    let message = with_detail(head, detail);
     match status.as_u16() {
+        402 if insufficient_credits => Error::InsufficientCredits(message),
         401 | 403 => Error::Unauthorized(message),
         404 => Error::NotFound(message),
         400 | 413 | 422 => Error::InvalidRequest(message),
@@ -193,15 +204,31 @@ pub(crate) fn hosted_status_error(
         || body.to_string(),
         |e| e.as_str().map_or_else(|| e.to_string(), str::to_string),
     );
+    // A plan refusal is no credential fault: `Engine`, like a 402, so a host
+    // shows an upgrade path instead of its sign-in flow
+    // (tinyhumansai/openhuman#8081).
+    if code.ends_with(PLAN_REQUIRED_SUFFIX) {
+        let head = format!(
+            "[{code}] memory API {label} on {host}: memory is not included in this account's \
+             plan (HTTP {status})"
+        );
+        return Error::Engine(with_detail(head, &excerpt(&message)));
+    }
     let head = match status.as_u16() {
-        401 | 403 => format!(
+        401 => format!(
             "[{code}] memory API {label} on {host}: the session expired or the API key was \
              rejected (HTTP {status}); re-authenticate"
         ),
-        402 => format!(
+        // The credential was accepted and the request refused, so nothing
+        // here says the session expired.
+        403 => format!(
+            "[{code}] memory API {label} on {host}: the request was refused (HTTP {status})"
+        ),
+        402 if code == INSUFFICIENT_CREDITS_CODE => format!(
             "[{code}] memory API {label} on {host}: the account has insufficient credits \
              (HTTP {status})"
         ),
+        402 => format!("[{code}] memory API {label} on {host} returned HTTP {status}"),
         _ => format!("[{code}] memory API {label} on {host} returned HTTP {status}"),
     };
     // memory-api's refusal of an already-claimed `Idempotency-Key` is relayed
@@ -253,11 +280,12 @@ fn clean_code(raw: &str) -> String {
         .to_ascii_uppercase()
 }
 
-/// The code a failure without an `errorCode` is filed under.
+/// The neutral code a failure without a usable `errorCode` is filed under.
+/// HTTP 402 does not establish credit exhaustion on its own.
 fn default_code(status: StatusCode) -> String {
     match status.as_u16() {
         401 | 403 => "UNAUTHORIZED".to_string(),
-        402 => INSUFFICIENT_CREDITS_CODE.to_string(),
+        402 => "HTTP_402".to_string(),
         429 => "RATE_LIMITED".to_string(),
         other => format!("HTTP_{other}"),
     }

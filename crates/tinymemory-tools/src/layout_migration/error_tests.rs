@@ -2,14 +2,14 @@ use super::*;
 
 #[test]
 fn account_wide_refusals_are_told_from_an_items_own_failure() {
-    let credits = Error::Engine(EngineError::Engine(
+    let credits = Error::Engine(EngineError::InsufficientCredits(
         "[USER_INSUFFICIENT_CREDITS] the account has insufficient credits (HTTP 402)".into(),
     ));
     assert!(credits.is_account_wide());
     assert_eq!(credits.code(), "INSUFFICIENT_CREDITS");
     assert!(Error::Off("signed out".into()).is_account_wide());
     assert!(Error::from(EngineError::Unauthorized("key".into())).is_account_wide());
-    assert!(Error::from(EngineError::Unavailable("down".into())).is_account_wide());
+    assert!(!Error::from(EngineError::Unavailable("request timed out".into())).is_account_wide());
     let plain = Error::from(EngineError::Engine("boom".into()));
     assert!(!plain.is_account_wide());
     assert_eq!(plain.code(), "ENGINE");

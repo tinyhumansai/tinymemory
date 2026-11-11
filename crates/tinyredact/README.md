@@ -41,12 +41,33 @@ safety/
 | `has_likely_pii` | Strict boundary check used to *reject* namespaces and keys |
 | `has_likely_email` | Boundary check for an ordinary email address |
 | `redact_credential_markers` | Only the marker rules, without the PII pass |
+| `redact_home_paths` | Replace recognized home-directory prefixes with `<HOME>` |
 | `pii::redact_pii`, `pii::redact_pii_with` | Only the PII pass |
 | `Policy`, `BareCardGate` | The single tunable |
 | `Sanitized<T>`, `SanitizationReport` | Cleaned value plus a tally of changes |
 
-None of these functions fail or panic at runtime. Every scrubber returns a
-`Sanitized<T>`; `report.changed()` says whether anything was replaced.
+The sanitization functions return a `Sanitized<T>`;
+`report.changed()` says whether anything was replaced. The standalone
+`redact_home_paths` rule returns the scrubbed string directly.
+
+`redact_home_paths` is a standalone text rule for `/home/<user>`,
+`/Users/<user>`, drive-qualified and UNC Windows paths, and `~` home paths.
+It also recognizes file URIs with empty, `localhost`, or remote authorities,
+redacting a home profile at the path root while preserving the scheme,
+authority, and remaining path. Windows drive paths such as
+`file:///C:/Users/...` are supported. URI path text is scanned as written;
+percent escapes are not decoded.
+It preserves text below the home directory and leaves unrelated absolute paths
+alone; call it separately when a host needs this rule without the full secret
+and PII pipeline. After an explicit home prefix, the nonempty profile component
+is redacted through its path separator, including arbitrary symbols and UTF-8.
+Without a descendant separator, whitespace and clear closing punctuation bound
+the bare component; terminal punctuation remains in the text. Bare `~` and
+`~<user>` are supported, while `~.`
+and `~.<name>` remain unchanged as relative paths. Windows drive and UNC
+profiles may contain spaces when a descendant separator completes the same
+path; a new absolute path after prose ends the profile. Quoted paths use the
+matching quote to bound a bare profile, and the separator to bound descendants.
 
 ## What is blocked and what is redacted
 

@@ -81,6 +81,11 @@ pub(crate) struct Timing {
     /// How long a running Direct erasure is polled before it is reported
     /// as not done (the status requests included).
     pub(crate) erasure: Duration,
+    /// How long an evidence-mode recall waits for its packs. Packs still
+    /// building then are left out, so one slow scope does not cost the
+    /// others. Under the 15s a host typically allows one memory tool call
+    /// (OpenHuman's), so the evidence arrives inside it.
+    pub(crate) evidence: Duration,
 }
 
 /// Longest gap between hosted polls. A fixed 250ms poll would spend a fifth
@@ -94,6 +99,7 @@ impl Default for Timing {
             settle: Duration::from_secs(10),
             poll: Duration::from_millis(250),
             erasure: Duration::from_secs(300),
+            evidence: Duration::from_secs(12),
         }
     }
 }

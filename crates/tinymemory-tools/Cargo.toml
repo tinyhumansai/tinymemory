@@ -27,17 +27,36 @@ thiserror = "2"
 # A holistic recall reads its sections concurrently (`join_all`). Runtime
 # agnostic, so the crate still links no executor.
 futures = { version = "0.3", default-features = false, features = ["alloc", "std"] }
+# Owned guards let a host retain an owner barrier across an explicit erase
+# without depending on a particular async runtime.
+async-lock = "3"
+# Each newly created owner gate needs a process epoch that cannot ABA after
+# weak-registry eviction and recreation.
+uuid = { version = "1", features = ["v4"] }
+# Optional JSON Schema derives for host-configured memory settings.
+schemars = { version = "1.2", optional = true }
 
 # `LayoutHost` is an async port.
 async-trait = "0.1"
 
 # A queued job's id is a digest of the job and its root.
 sha2 = "0.11"
+# Atomic filesystem claim markers are opt-in for hosts that move a shared
+# legacy tree between local accounts.
+tempfile = { version = "3", optional = true }
+url = { version = "2", optional = true }
+
+[features]
+# A filesystem implementation of layout migration's LegacyClaim port.
+fs-claim = ["dep:tempfile", "dep:url"]
+# JSON Schema derives for host-facing configuration types.
+schema = ["dep:schemars"]
 
 [dev-dependencies]
 # Every tool and the context compiler run against the reference engine.
 tinymemory-api = { path = "../tinymemory-api", features = ["conformance"] }
 tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+toml = "1"
 
 [lints]
 workspace = true

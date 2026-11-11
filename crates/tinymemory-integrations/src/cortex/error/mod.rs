@@ -12,7 +12,8 @@
 //! | HTTP | Variant |
 //! | --- | --- |
 //! | 401, 403 | [`Error::Unauthorized`] |
-//! | 402 | [`Error::Engine`] (hosted: prefixed `[USER_INSUFFICIENT_CREDITS]`) |
+//! | 402 | [`Error::InsufficientCredits`] when the hosted code names exhausted credits |
+//! | any, hosted, code `*_PLAN_REQUIRED` | [`Error::Engine`] ([`is_plan_required`]) |
 //! | 404 | [`Error::NotFound`] |
 //! | 400, 413, 422 | [`Error::InvalidRequest`] |
 //! | 409 | [`Error::Conflict`] |
@@ -25,13 +26,21 @@
 //! AUTHORIZATION_STATE_CHANGED`, which a concurrent scope registration
 //! causes and which settles on its own.
 //!
-//! **Why 402 is `Engine`.** An exhausted credit balance is neither transient
+//! **Why 402 has a dedicated variant.** An exhausted credit balance is neither transient
 //! (`Unavailable` would invite a retry loop that cannot succeed until someone
 //! tops up) nor a credential fault (`Unauthorized` would send the host to its
 //! sign-in flow). It is the engine refusing to serve, which is what `Engine`
-//! means, and the `[USER_INSUFFICIENT_CREDITS]` prefix lets
-//! [`is_insufficient_credits`] tell it apart so a host can show a top-up
-//! prompt.
+//! means; the hosted transport maps its structured backend code to
+//! [`Error::InsufficientCredits`] so a host can show a top-up prompt.
+//!
+//! **Why a plan refusal is `Engine`.** The hosted backend answers `403` with
+//! a `*_PLAN_REQUIRED` code (`MEMORY_PLAN_REQUIRED`) when the account's plan
+//! does not include the feature. The credential is fine, so `Unauthorized`
+//! would sign a valid user out (tinyhumansai/openhuman#8081); like a 402 it
+//! is the engine refusing to serve, and [`is_plan_required`] lets a host show
+//! an upgrade path. A hosted `403` without such a code stays `Unauthorized`
+//! but says the request was refused, not that the session expired, which
+//! only a `401` says.
 //!
 //! # The `[CODE]` prefix
 //!
@@ -51,12 +60,16 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// The TinyHumans backend's code for an exhausted credit balance (HTTP 402).
 pub(crate) const INSUFFICIENT_CREDITS_CODE: &str = "USER_INSUFFICIENT_CREDITS";
 
+pub(crate) use tinymemory_api::error::PLAN_REQUIRED_SUFFIX;
+
 /// The message every variant carries.
 fn message_of(error: &Error) -> &str {
     match error {
         Error::Unsupported(m)
+        | Error::Off(m)
         | Error::InvalidRequest(m)
         | Error::Unauthorized(m)
+        | Error::InsufficientCredits(m)
         | Error::NotFound(m)
         | Error::Conflict(m)
         | Error::Unavailable(m)
@@ -81,10 +94,12 @@ pub fn error_code(error: &Error) -> Option<&str> {
     well_formed.then_some(code)
 }
 
-/// Whether `error` is the hosted backend's "not enough credits" refusal.
+/// Whether `error` is the hosted backend refusing a feature the account's
+/// plan does not include. Not a credential fault: the host keeps the session
+/// and shows an upgrade path.
 #[must_use]
-pub fn is_insufficient_credits(error: &Error) -> bool {
-    matches!(error, Error::Engine(_)) && error_code(error) == Some(INSUFFICIENT_CREDITS_CODE)
+pub fn is_plan_required(error: &Error) -> bool {
+    error.is_plan_required()
 }
 
 #[cfg(test)]

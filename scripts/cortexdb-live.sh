@@ -5,11 +5,18 @@
 #
 #   ./scripts/cortexdb-live.sh            # boot, test, tear down
 #   KEEP=1 ./scripts/cortexdb-live.sh     # leave the server running after
-#   CORTEXDB_VERSION=v0.10.4 ./scripts/cortexdb-live.sh
+#   CORTEXDB_VERSION=v0.10.4 ./scripts/cortexdb-live.sh  # explicit version override
+#   CORTEXDB_IMAGE=registry/cortexdb@sha256:... ./scripts/cortexdb-live.sh
 
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
+# Keep the version convenience for this script while the default stays tied to
+# the verified immutable multi-architecture image digest. An explicit image
+# override takes precedence.
+if [ -z "${CORTEXDB_IMAGE:-}" ] && [ -n "${CORTEXDB_VERSION:-}" ]; then
+  export CORTEXDB_IMAGE="cortexdb/cortexdb:${CORTEXDB_VERSION}"
+fi
 compose=(docker compose --project-name tinymemory-cortexdb-test -f "$root/integration/cortexdb/docker-compose.yml")
 port="${CORTEXDB_PORT:-3142}"
 # Compose reads the published port from the environment.
@@ -52,4 +59,8 @@ echo "CortexDB $(curl --silent "$url/v1/admin/health") at $url"
 
 TINYMEMORY_LIVE_CORTEXDB_URL="$url" cargo test -p tinymemory-integrations --test live_cortexdb -- --nocapture
 TINYMEMORY_LIVE_CORTEXDB_URL="$url" cargo test -p tinymemory-integrations --features documents-office --test office_live -- --nocapture
-TINYMEMORY_LIVE_CORTEXDB_URL="$url" cargo test -p tinymemory-integrations --features brain --test live_cortex_lifecycle -- --nocapture
+# These tests mutate scopes on one live server. Running them in parallel races
+# CortexDB's shared authorization/derivation state and can return 409 while a
+# belief build is in flight; preserve the test assertions and serialize only
+# this live target.
+TINYMEMORY_LIVE_CORTEXDB_URL="$url" RUST_TEST_THREADS=1 cargo test -p tinymemory-integrations --features brain --test live_cortex_lifecycle -- --nocapture

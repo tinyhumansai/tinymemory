@@ -104,3 +104,24 @@ pub struct BrainBatch {
     /// beliefs on its own ([`tinymemory_api::Consolidation::Automatic`]).
     pub jobs: Vec<BackgroundJob>,
 }
+
+/// One brain source and the number of documents filed under it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BrainSourceCount {
+    /// The source id (`pdf`, `notion`, …).
+    pub source: String,
+    /// Documents stored under the source, including its nested collections.
+    pub documents: u64,
+}
+
+/// A bounded count of documents in one brain layout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BrainSourcesView {
+    /// The layout root the brain lives under.
+    pub root: String,
+    /// Sources with documents, sorted by count descending and then id.
+    pub sources: Vec<BrainSourceCount>,
+    /// Documents without a source node at the layout's source depth, including
+    /// items whose namespace facet was missing.
+    pub unfiled: u64,
+}

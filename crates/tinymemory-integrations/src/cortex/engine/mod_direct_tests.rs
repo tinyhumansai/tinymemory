@@ -259,8 +259,8 @@ async fn an_accepted_write_neither_asks_for_indexing_nor_waits_to_be_listed() {
     assert!(requests.iter().all(|r| !r.contains("wait=indexed")));
     assert_eq!(
         state.count("GET /v1/events") - before,
-        2,
-        "only the replay lookup, one per item: no visibility polling"
+        3,
+        "one document lookup and a conversation lookup plus thread fallback; no visibility polling"
     );
 }
 

@@ -88,6 +88,24 @@ pub(super) fn recall_body(scope: &str, query: &str, events: usize, filter: &Meta
     body
 }
 
+/// Keep the broad legacy read and add a channel-specific pack when needed.
+/// Existing records have no channel label, so replacing the broad read would
+/// make those records disappear from filtered recalls.
+pub(super) fn recall_bodies(
+    scope: &str,
+    query: &str,
+    events: usize,
+    filter: &MetaFilter,
+) -> Vec<Value> {
+    let broad = recall_body(scope, query, events, filter);
+    let Some(channel_labels) = labels::channel_narrowing(filter) else {
+        return vec![broad];
+    };
+    let mut targeted = broad.clone();
+    targeted["filters"] = json!({ "metadata": { "labels": channel_labels } });
+    vec![broad, targeted]
+}
+
 /// The most [`whole_items_budget`] asks for: 8 Mi tokens. CortexDB 0.10.4
 /// counts 3 to 3.5 bytes a token (measured: 700,000 bytes of English text
 /// come back whole at 210,000 tokens and are cut at 200,000; 900,000 bytes
@@ -186,35 +204,40 @@ impl CortexEngine {
         let hint = &hint;
         let packs: Vec<(Vec<Envelope>, Vec<Hit>)> = stream::iter(scopes)
             .map(|scope| async move {
-                let mut body = recall_body(&scope.path, &req.query, events, &req.filter);
-                if wanted_beliefs > 0 {
-                    body["include"] = json!(["events", "beliefs"]);
-                    body["budgets"]["per_layer_limits"]["beliefs"] = json!(wanted_beliefs);
-                }
-                // Another scope of this fetch may have had the hint refused.
-                if let Some(temporal) = hint.as_ref().filter(|_| !self.refers_off()) {
-                    body["temporal"] = temporal.clone();
-                }
-                let pack_started = Instant::now();
-                let pack = match self.log.recall(&body).await {
-                    Err(error @ Error::InvalidRequest(_)) if hint.is_some() => {
-                        body.as_object_mut().map(|body| body.remove("temporal"));
-                        let pack = self.log.recall(&body).await?;
-                        self.refers_refused(&error);
-                        pack
+                let mut per_scope = Vec::new();
+                let mut beliefs = Vec::new();
+                for (index, mut body) in recall_bodies(&scope.path, &req.query, events, &req.filter)
+                    .into_iter().enumerate()
+                {
+                    if wanted_beliefs > 0 && index == 0 {
+                        body["include"] = json!(["events", "beliefs"]);
+                        body["budgets"]["per_layer_limits"]["beliefs"] = json!(wanted_beliefs);
                     }
-                    pack => pack?,
-                };
-                log::trace!(target: "tinymemory_eval_timing", "cortex_recall_pack={}", pack_started.elapsed().as_secs_f64() * 1_000.0);
-                let beliefs = if wanted_beliefs > 0 {
-                    beliefs_in(&self.layout, &pack, "/layers/beliefs")
-                } else {
-                    Vec::new()
-                };
-                Ok::<_, Error>((
-                    ranked(&pack, Some(scope.kind), &req.filter, req.exclude_thread.as_ref()),
-                    beliefs,
-                ))
+                    if let Some(temporal) = hint.as_ref().filter(|_| !self.refers_off()) {
+                        body["temporal"] = temporal.clone();
+                    }
+                    let pack_started = Instant::now();
+                    let pack = match self.log.recall(&body).await {
+                        Err(error @ Error::InvalidRequest(_)) if hint.is_some() => {
+                            body.as_object_mut().map(|body| body.remove("temporal"));
+                            let pack = self.log.recall(&body).await?;
+                            self.refers_refused(&error);
+                            pack
+                        }
+                        pack => pack?,
+                    };
+                    log::trace!(target: "tinymemory_eval_timing", "cortex_recall_pack={}", pack_started.elapsed().as_secs_f64() * 1_000.0);
+                    if index == 0 && wanted_beliefs > 0 {
+                        beliefs = beliefs_in(&self.layout, &pack, "/layers/beliefs");
+                    }
+                    per_scope.extend(ranked(
+                        &pack,
+                        Some(scope.kind),
+                        &req.filter,
+                        req.exclude_thread.as_ref(),
+                    ));
+                }
+                Ok::<_, Error>((per_scope, beliefs))
             })
             .buffered(PACKS_AT_ONCE)
             .try_collect()

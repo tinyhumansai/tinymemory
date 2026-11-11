@@ -213,8 +213,8 @@ impl<S: QueueStore> JobQueue<S> {
                     );
                 }
                 Err(error) => {
-                    // A refusal of the whole account (no credits, a rejected
-                    // credential, an unreachable engine) says nothing about
+                    // A typed refusal of the whole account (memory off, no
+                    // credits, or a rejected credential) says nothing about
                     // the job, so it keeps its attempts and waits: dropping
                     // it would leave a permanent gap in the beliefs.
                     let account_wide = EngineFailure::from(error.clone()).is_account_wide();

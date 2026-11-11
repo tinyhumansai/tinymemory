@@ -8,19 +8,25 @@ detection come from the sibling [`documents`](../documents/README.md) module.
 Architecture overview:
 [`docs/architecture/integrations.md`](../../../../docs/architecture/integrations.md).
 
-Where a host stores its configured sources, and how it edits them, is the
-host's business: this module reads a `MemorySourceEntry` it is handed and
-checks it with `MemorySourceEntry::validate`, nothing more.
+The host still owns persistence and migration of its configuration. This
+module provides the reusable configured-source wire types
+(`MemorySourceConfig`, `MemorySourceKind`), validation and layout rules
+(`SourceSpec`), restart-safe sync state types, and the source reading and
+placement mechanics. The host supplies the filesystem state store, placement
+callback, and job enqueue port.
 
 ## Layers
 
 | Module | Owns |
 | --- | --- |
-| `types` | the configuration a host persists: `MemorySourceEntry` keyed by `SourceKind`, its field rules, and the reader output types (`SourceItem`, `SourceContent`, `ContentType`) |
+| `types` | reader entries keyed by `SourceKind`, the host `MemorySourceConfig` and `MemorySourceKind` wire types, and reader output types (`SourceItem`, `SourceContent`, `ContentType`) |
+| `spec` | host source target normalization, duplicate/schedule/namespace validation, and per-source `MemoryLayout` selection |
+| `state` | serializable `SourceState` and `SourceStatus`, plus interrupted-sync recovery; it owns no storage |
 | `readers` | `SourceReader` (list, read, read as a `StoreItem`) and one reader per kind, each in its own module directory; `local_file` holds the shared size-capped read and the path-containment guard |
 | `fetch` | one URL into a `RawDocument` or a link item (`sources-network`); the RSS and web-page readers fetch through it with their own body caps |
 | `fetch::ssrf` | the SSRF guard: scheme and host policy, one address classifier for literal and resolved addresses, a public-only DNS resolver, per-hop redirect checks, and a capped body reader |
 | `items` | reader output to `StoreItem`s with `MemoryMeta` filled per kind; `collect_items` drives a reader end to end |
+| `sync` | generic source sync loop and batch storage; `store_placed` applies a host placement callback and returns touched-node belief jobs |
 | `error` | the module `Error`, mapped onto `tinymemory_api::Error` |
 
 ## Kinds and metadata
@@ -73,6 +79,9 @@ named and numeric entities decode the same way everywhere.
 ## Features
 
 - `sources` — the local readers, `items` and `types`; implies
-  `documents`. Links no HTTP stack.
+  `documents`. Links no HTTP client. JSON Schema derives are opt-in through
+  the separate `schema` feature.
 - `sources-network` — adds the GitHub, RSS and web-page readers, `fetch`, and
   the SSRF guard.
+- `schema` — enables `schemars` derives for source config and reader types;
+  downstream consumers that generate schemas must enable it explicitly.

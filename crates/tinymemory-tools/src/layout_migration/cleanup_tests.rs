@@ -330,3 +330,81 @@ async fn after_an_unconfirmed_import_moved_items_are_forgotten_by_id_never_erase
     assert_eq!(state.phase, Phase::Cleaned);
     assert!(texts(legacy.as_ref()).await.is_empty());
 }
+
+/// A legacy tree holding part of one chunked item: export names it in
+/// `incomplete`, and its erase must never be called.
+struct PartlyStored(ReferenceEngine);
+
+#[async_trait]
+impl MemoryEngine for PartlyStored {
+    fn descriptor(&self) -> &EngineDescriptor {
+        self.0.descriptor()
+    }
+    async fn health(&self) -> EngineHealth {
+        self.0.health().await
+    }
+    async fn recall(&self, req: RecallRequest) -> Result<RecallAnswer> {
+        self.0.recall(req).await
+    }
+    async fn fetch(&self, req: FetchRequest) -> Result<FetchPage> {
+        self.0.fetch(req).await
+    }
+    async fn store(&self, item: StoreItem) -> Result<StoreReceipt> {
+        self.0.store(item).await
+    }
+    async fn forget(&self, target: ForgetTarget) -> Result<ForgetReport> {
+        self.0.forget(target).await
+    }
+    async fn list(&self, req: ListRequest) -> Result<ListPage> {
+        self.0.list(req).await
+    }
+    async fn export(&self, req: ListRequest) -> Result<ExportPage> {
+        let mut page = self.0.export(req).await?;
+        page.incomplete.push(ItemId("partly-stored".into()));
+        Ok(page)
+    }
+    async fn get(&self, req: GetRequest) -> Result<Vec<Hit>> {
+        self.0.get(req).await
+    }
+    async fn erase(&self, _: EraseRequest) -> Result<EraseReport> {
+        panic!("a legacy tree with a partly stored item is never erased scope-wide");
+    }
+}
+
+#[tokio::test]
+async fn a_partly_stored_legacy_item_blocks_the_scope_wide_erase() {
+    let store = MemoryStateStore::default();
+    let legacy = Arc::new(PartlyStored(ReferenceEngine::new()));
+    for i in 0..5 {
+        legacy
+            .store(StoreItem::learning(
+                format!("fact {i}"),
+                LearningKind::Fact,
+                0.5,
+                MemoryMeta::default(),
+            ))
+            .await
+            .unwrap();
+    }
+    let engines = Engines {
+        legacy: legacy.clone(),
+        tree: Arc::new(ReferenceEngine::new()),
+    };
+    let mut state = copied(&store, &engines).await;
+    cleanup(
+        &store,
+        &engines,
+        &placement(),
+        false,
+        false,
+        &mut state,
+        || async { false },
+    )
+    .await
+    .unwrap();
+    assert_eq!(state.phase, Phase::Cleaned);
+    assert!(
+        texts(legacy.as_ref()).await.is_empty(),
+        "moved items forgotten by id"
+    );
+}

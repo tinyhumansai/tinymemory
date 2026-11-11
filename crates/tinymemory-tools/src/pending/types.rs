@@ -163,6 +163,17 @@ pub struct FenceToken<'a> {
     generation: u64,
 }
 
+/// An owned fence token for a gate shared through [`std::sync::Arc`].
+///
+/// Unlike [`FenceToken`], this token can be stored in a fence object that also
+/// owns the gate. Dropping it lifts exactly one active fence.
+#[must_use = "dropping the token lifts the fence"]
+#[derive(Debug)]
+pub(super) struct OwnedFenceToken {
+    gate: std::sync::Arc<WriteGate>,
+    generation: u64,
+}
+
 impl WriteGate {
     /// A gate for `process` (an id unique to this process run).
     #[must_use]
@@ -203,14 +214,34 @@ impl WriteGate {
     /// ([`super::PendingWrites::clear_stale`] with [`FenceToken::generation`])
     /// and in-flight drains stop.
     pub fn begin_fence(&self) -> FenceToken<'_> {
-        let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
-        self.fences.fetch_add(1, Ordering::SeqCst);
-        let generation = self.generation.load(Ordering::SeqCst) + 1;
-        self.generation.store(generation, Ordering::SeqCst);
+        let generation = self.start_fence();
         FenceToken {
             gate: self,
             generation,
         }
+    }
+
+    /// Starts an owned fence token while retaining this gate through an
+    /// [`std::sync::Arc`].
+    pub(super) fn begin_fence_owned(self: &std::sync::Arc<Self>) -> OwnedFenceToken {
+        let generation = self.start_fence();
+        OwnedFenceToken {
+            gate: self.clone(),
+            generation,
+        }
+    }
+
+    fn start_fence(&self) -> u64 {
+        let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+        self.fences.fetch_add(1, Ordering::SeqCst);
+        let generation = self.generation.load(Ordering::SeqCst) + 1;
+        self.generation.store(generation, Ordering::SeqCst);
+        generation
+    }
+
+    fn finish_fence(&self) {
+        let _admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+        self.fences.fetch_sub(1, Ordering::SeqCst);
     }
 
     /// Whether any fence is in force.
@@ -230,11 +261,20 @@ impl FenceToken<'_> {
 
 impl Drop for FenceToken<'_> {
     fn drop(&mut self) {
-        let _admission = self
-            .gate
-            .admission
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        self.gate.fences.fetch_sub(1, Ordering::SeqCst);
+        self.gate.finish_fence();
+    }
+}
+
+impl OwnedFenceToken {
+    /// The generation this fence opened.
+    #[must_use]
+    pub(super) fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
+impl Drop for OwnedFenceToken {
+    fn drop(&mut self) {
+        self.gate.finish_fence();
     }
 }

@@ -100,7 +100,7 @@ impl LayoutHost for FakeHost {
         &self.store
     }
 
-    fn engines(&self) -> Result<Engines> {
+    async fn engines(&self) -> Result<Engines> {
         Ok(Engines {
             legacy: self.legacy.clone(),
             tree: self.tree.clone(),
@@ -134,7 +134,7 @@ impl LayoutHost for FakeHost {
         self.free.load(Ordering::SeqCst) && left > 0
     }
 
-    fn legacy_claim(&self) -> Result<Option<Box<dyn LegacyClaim>>> {
+    async fn legacy_claim(&self) -> Result<Option<Box<dyn LegacyClaim>>> {
         Ok(self
             .claim
             .clone()
@@ -164,7 +164,7 @@ pub(crate) struct RefusingEngine {
 impl RefusingEngine {
     /// The hosted engine's refusal for an exhausted credit balance (HTTP 402).
     pub(crate) fn out_of_credits() -> Self {
-        Self::with(tinymemory_api::Error::Engine(
+        Self::with(tinymemory_api::Error::InsufficientCredits(
             "[USER_INSUFFICIENT_CREDITS] memory API fetch on api.example: the account has \
              insufficient credits (HTTP 402)"
                 .into(),

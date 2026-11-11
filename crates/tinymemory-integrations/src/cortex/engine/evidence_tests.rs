@@ -1,8 +1,9 @@
 //! Tests for rendering recall packs as evidence.
 
 use super::*;
+use crate::cortex::testing::{direct_double, direct_engine, sample_items};
 use serde_json::json;
-use tinymemory_api::{MemoryMeta, Reach, StoreItem, Turn, TurnRange};
+use tinymemory_api::{MemoryEngine, MemoryMeta, Reach, StoreItem, Turn, TurnRange};
 
 fn turn(thread: &str, role: Role, text: &str) -> StoreItem {
     let mut meta = MemoryMeta {
@@ -182,4 +183,105 @@ fn a_learning_made_in_an_excluded_thread_stays_in_the_evidence() {
     );
     let texts: Vec<&str> = gathered.events.iter().map(|e| e.text.as_str()).collect();
     assert_eq!(texts, vec!["the user prefers green tea"]);
+}
+
+/// A Direct engine holding [`sample_items`], with a short evidence
+/// deadline, and recalls over `slow` scopes held past it.
+async fn engine_with_slow(slow: &'static str) -> CortexEngine {
+    let (endpoint, state) = direct_double().await;
+    let mut engine = direct_engine(&endpoint);
+    engine.log.timing.evidence = std::time::Duration::from_millis(300);
+    for item in sample_items() {
+        engine.store(item).await.unwrap();
+    }
+    *state.slow_recall.lock().unwrap() = Some((slow, 3_000));
+    engine
+}
+
+fn evidence_request() -> RecallRequest {
+    let mut req = RecallRequest::new("helix", 5);
+    req.mode = tinymemory_api::RecallMode::Evidence;
+    req
+}
+
+#[tokio::test]
+async fn a_scope_still_building_at_the_deadline_is_left_out() {
+    let engine = engine_with_slow("app:learnings").await;
+    let started = std::time::Instant::now();
+    let got = engine.recall(evidence_request()).await.unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "the recall waited for the slow pack"
+    );
+    assert!(got.answer.contains("## Conversation"), "{}", got.answer);
+    assert!(!got.citations.is_empty());
+    assert!(!got.answer.contains("prefers helix"), "{}", got.answer);
+    assert!(
+        got.answer.contains("only partly searched: 1 of"),
+        "{}",
+        got.answer
+    );
+    assert!(got.citations.iter().all(|c| c.kind != ItemKind::Learning));
+}
+
+#[tokio::test]
+async fn a_late_scope_beside_empty_ones_is_unavailable_not_nothing_stored() {
+    let engine = engine_with_slow("app:conversations").await;
+    let mut req = evidence_request();
+    req.question = "editor".into();
+    let error = engine.recall(req).await.unwrap_err();
+    assert!(
+        matches!(&error, Error::Unavailable(m) if m.contains("not fully searched")),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_recall_with_every_pack_in_time_carries_no_note() {
+    let engine = engine_with_slow("app:no-such-scope").await;
+    let got = engine.recall(evidence_request()).await.unwrap();
+    assert!(!got.answer.contains("partly searched"), "{}", got.answer);
+}
+
+#[tokio::test]
+async fn no_pack_by_the_deadline_is_unavailable_not_empty() {
+    let engine = engine_with_slow("app:").await;
+    let error = engine.recall(evidence_request()).await.unwrap_err();
+    assert!(matches!(error, Error::Unavailable(_)), "{error:?}");
+}
+
+#[tokio::test]
+async fn a_broad_channel_pack_is_kept_when_its_supplement_misses_the_deadline() {
+    let (endpoint, state) = direct_double().await;
+    let mut engine = direct_engine(&endpoint);
+    engine.log.timing.evidence = std::time::Duration::from_millis(300);
+    let item = StoreItem::document(
+        "helix: the broad pack still has this channel item",
+        MemoryMeta {
+            channel: Some("support".into()),
+            ..MemoryMeta::default()
+        },
+    );
+    let item_id = item.fingerprint();
+    engine.store(item).await.unwrap();
+    *state.slow_channel_recall.lock().unwrap() = Some(3_000);
+
+    let mut req = evidence_request();
+    req.filter = MetaFilter {
+        channel: Some("support".into()),
+        ..MetaFilter::kinds([ItemKind::Document])
+    };
+    let got = engine.recall(req).await.unwrap();
+    assert_eq!(
+        got.citations
+            .iter()
+            .map(|citation| citation.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![item_id.as_str()],
+    );
+    assert!(
+        got.answer.contains("only partly searched"),
+        "{}",
+        got.answer
+    );
 }

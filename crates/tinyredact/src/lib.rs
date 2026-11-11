@@ -38,6 +38,7 @@
 //! corroborated behaviour use the `*_with` variants and [`Policy::corroborated`].
 
 mod markers;
+mod paths;
 mod pattern;
 /// Exhaustive checksum-gated multilingual national-ID PII module. Content
 /// scrubbing runs from [`sanitize_text`]; the boundary check is re-exported as
@@ -47,6 +48,7 @@ mod policy;
 mod sanitize;
 
 pub use markers::redact_credential_markers;
+pub use paths::redact_home_paths;
 pub use pii::{has_likely_email, has_likely_pii};
 pub use policy::{BareCardGate, Policy, SanitizationReport, Sanitized};
 pub use sanitize::{

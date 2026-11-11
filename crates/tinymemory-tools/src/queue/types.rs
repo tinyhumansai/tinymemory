@@ -86,6 +86,16 @@ pub enum Selection {
     One(String),
 }
 
+impl Selection {
+    /// Selects every pending job for a missing or blank id, or the named job
+    /// while preserving the bytes of a nonblank id.
+    #[must_use]
+    pub fn from_id(id: Option<String>) -> Self {
+        id.filter(|id| !id.trim().is_empty())
+            .map_or(Self::All, Self::One)
+    }
+}
+
 /// Where the host keeps the queue (a file, a document, a stream).
 ///
 /// Synchronous, because the queue is small and read-modify-written under its

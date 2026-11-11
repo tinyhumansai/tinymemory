@@ -5,11 +5,11 @@
 //!
 //! | Module | Feature | What it does |
 //! | --- | --- | --- |
-//! | [`cortex`], [`registry`], [`config`] | `cortex` (default) | The CortexDB engine over its two wires, and building one from configuration |
+//! | [`cortex`], [`registry`], [`config`] | `cortex` (default) | The CortexDB engine, cached guarded bindings, and configuration |
 //! | `documents` | `documents`, `documents-office` | Format sniffing and conversion to markdown, emitting `StoreItem::Document` |
 //! | `brain` | `brain` | Converting files into the brain documents `tinymemory_tools::Brain` ingests, by source type |
 //! | `sources` | `sources`, `sources-network` | Readers turning folders, files, links, GitHub, RSS, and conversations into `StoreItem`s |
-//! | `safety` | `safety` | Secret and PII scrubbing for a `StoreItem` before it is stored |
+//! | `safety` | `safety` | Secret and PII scrubbing plus safe [`safety::ScrubbingEngine`] and [`safety::TimedEngine`] decorators |
 //! | `import` | `legacy-import` | Migrating a legacy v1 (embedded TinyCortex) workspace into any engine |
 //!
 //! A typical write path is source → documents → safety → engine; the
@@ -22,10 +22,21 @@
 //! # async fn demo() -> tinymemory_integrations::Result<()> {
 //! use std::sync::Arc;
 //! use tinymemory_api::{FetchMode, FetchRequest, MemoryMeta, SourceKind, StoreItem};
-//! use tinymemory_integrations::{EngineCredential, MemoryConfig, cortex::StaticBearer};
+//! use tinymemory_integrations::{
+//!     EngineBinder, EngineCredential, MemoryConfig, cortex::StaticBearer, safety::Policy,
+//! };
 //!
 //! let config = MemoryConfig::default(); // engine = "tinyhumans"
-//! let engine = config.build(EngineCredential::Dynamic(Arc::new(StaticBearer::new("tiny_live_..."))))?;
+//! let engine = EngineBinder::default()
+//!     .bind_configured(
+//!         &config.engine,
+//!         config.settings(),
+//!         "host-session-credential-slot",
+//!         EngineCredential::Dynamic(Arc::new(StaticBearer::new("tiny_live_..."))),
+//!         Policy::default(),
+//!     )
+//!     .engine()?
+//!     .engine;
 //!
 //! let meta = MemoryMeta::from_source(SourceKind::Folder, Some("notes".into()));
 //! engine.store(StoreItem::document("Ownership moves values.", meta)).await?;
@@ -62,4 +73,11 @@ pub use config::{DEFAULT_ENGINE, EngineSettings, MemoryConfig};
 #[cfg(feature = "cortex")]
 pub use cortex::{BearerSource, StaticBearer};
 #[cfg(feature = "cortex")]
+pub use registry::binder::{
+    Binding, BoundEngine, CORTEXDB_ENGINE_ID, EndpointSource, EngineBinder, HOST_ENGINE_ENDPOINT,
+    TINYHUMANS_ENGINE_ID,
+};
+#[cfg(feature = "cortex")]
 pub use registry::{EngineCredential, build_engine, list_engines};
+#[cfg(feature = "safety")]
+pub use safety::{ScrubbingEngine, TimedEngine};

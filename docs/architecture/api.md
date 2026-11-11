@@ -12,10 +12,10 @@ of each operation is in [operations.md](operations.md); namespaces are in
 
 | Module | Holds |
 | --- | --- |
-| `engine` | `MemoryEngine`, `EngineDescriptor`, `EngineHealth`, `MAX_STORE_MANY`, `validate_many` |
+| `engine` | `MemoryEngine`, `EngineDescriptor`, `EngineHealth`, `EngineStatus`, `MAX_STORE_MANY`, `validate_many` |
 | `error` | `Error`, `Result` |
 | `item` | `StoreItem`, `ItemKind`, `ItemId`, `DocumentBody`, `Turn`, `Role`, `LearningKind`, `StoreReceipt` |
-| `meta` | `MemoryMeta`, `MetaFilter`, `SourceKind`, `SourceRef`, `ToolCallRef`, `TurnRange` |
+| `meta` | `MemoryMeta`, `MetaFilter`, `ObservedActor`, `SourceKind`, `SourceRef`, `ToolCallRef`, `TurnRange` |
 | `namespace` | `Namespace`, `Segment`, `SegmentKind`, `Reach` |
 | `query` | Requests and responses for recall, fetch, list and forget |
 | `explore` | `Facet`, explore and get requests, the listing-based defaults, limits |
@@ -118,18 +118,35 @@ fails with `Error::Unsupported("engine `<id>` does not offer <mode> fetch")`.
 { "state": "down", "reason": "connection refused" }
 ```
 
+## `EngineStatus`
+
+`EngineStatus::from_engine(&descriptor, health)` maps engine health into the
+host subsystem vocabulary (`ready`, `degraded`, `down`) and supplies the
+contract's five required operations (`recall`, `fetch`, `store`, `forget`, and
+`list`) as capabilities; these are required by `MemoryEngine`, not optional
+descriptor-specific features. It also sets `contract_version: "2.0"`.
+`EngineStatus::off(reason)` reports no usable
+engine with no capabilities.
+
 ## `Error`
 
 One enum, built with `thiserror`. Variants classify a failure by what a host
 can do about it. Messages are lowercase, carry no trailing punctuation, and
 never carry a credential: an engine sanitises its own failure before it becomes
-`Error::Engine`. `Error` is `Clone + PartialEq + Eq`.
+`Error::Engine`. `Error` is `Clone + PartialEq + Eq` and serializes its variant
+and sanitized message so a caller can retain its category without parsing
+`Display` text. `Error::code()` returns the stable host code; `is_account_wide()`
+identifies failures that apply to every request on the account, including a
+plan refusal: an `Engine` message led by a `[*_PLAN_REQUIRED] ` code, which
+`is_plan_required()` detects.
 
 | Variant | Display prefix | Used when | Raised by `tinymemory-api` itself? |
 | --- | --- | --- | --- |
+| `Off(String)` | `memory is off:` | Memory is disabled or no usable engine is configured. | no, host configuration |
 | `Unsupported(String)` | `unsupported:` | The engine does not offer the operation or fetch mode; the host should have read the descriptor. Also what `tinymemory-tools` returns for a write tool on read-only tools. | yes (`ensure_mode`) |
 | `InvalidRequest(String)` | `invalid request:` | The request is malformed: a blank query, zero limit, empty forget target, unresolved document URI, bad namespace, out-of-range confidence, unknown cursor. | yes (every `validate`) |
 | `Unauthorized(String)` | `unauthorized:` | The credential was missing, expired or rejected. | no, engines |
+| `InsufficientCredits(String)` | `insufficient credits:` | The hosted account cannot make requests until its balance is topped up. | no, hosted engine |
 | `NotFound(String)` | `not found:` | The addressed item or route does not exist. | no, engines |
 | `Conflict(String)` | `conflict:` | The write conflicts with what the engine holds. | no, engines |
 | `Unavailable(String)` | `unavailable:` | Transient (timeout, rate limit, unavailable upstream); the same call may succeed later. | no, engines |
@@ -138,6 +155,12 @@ never carry a credential: an engine sanitises its own failure before it becomes
 
 `Error::is_transient()` is `true` only for `Unavailable`; hosts retry on it.
 `get` of an unknown id is **not** an error: the id is left out of the result.
+
+Stable `code()` values are `MEMORY_OFF`, `UNSUPPORTED`, `INVALID_REQUEST`,
+`UNAUTHORIZED`, `INSUFFICIENT_CREDITS`, `UNAVAILABLE`, and `ENGINE`. `Off`,
+`Unauthorized`, and `InsufficientCredits` are account-wide. `Unavailable` is
+transient, but its generic request-level error carries no proof of an
+account-wide outage.
 
 `Result<T>` is `std::result::Result<T, Error>`. The conformance feature has
 its own `conformance::Error` (`Check` and `Engine` variants) naming the check

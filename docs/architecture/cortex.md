@@ -47,7 +47,7 @@ let hosted = CortexEngine::tinyhumans(
 | `CORTEXDB_ENGINE_ID`, `TINYHUMANS_ENGINE_ID` | the config ids `cortexdb` and `tinyhumans` |
 | `CORTEX_API_ENDPOINT`, `TINYHUMANS_API_ENDPOINT` | the default endpoints |
 | `cortexdb_descriptor()`, `tinyhumans_descriptor()` | the `EngineDescriptor`s |
-| `Error`, `Result`, `error_code`, `is_insufficient_credits` | the contract's error and two helpers for hosted failures |
+| `Error`, `Result`, `error_code` | the contract's error and hosted failure code extraction |
 
 `Debug` on the engine shows the wire (by id) and the endpoint origin, never the
 credential. A `CortexEngine` is `Clone` and cheap to share.
@@ -190,7 +190,7 @@ text.
 | HTTP status | `Error` variant | Notes |
 | --- | --- | --- |
 | 401, 403 | `Unauthorized` | message tells the user to check the API key (direct) or re-authenticate (hosted) |
-| 402 | `Engine` | hosted: prefixed `[USER_INSUFFICIENT_CREDITS]`; see below |
+| 402 | `InsufficientCredits` | hosted only when `errorCode` is `USER_INSUFFICIENT_CREDITS`; other 402 responses remain `Engine` |
 | 404 | `NotFound` | |
 | 400, 413, 422 | `InvalidRequest` | |
 | 409 | `Conflict` | on a hosted write retry it triggers recovery instead. Hosted, a `400` whose `errorCode` is `CONFLICT` is a `Conflict` too: that is how the backend relays memory-api's 409 for a claimed key |
@@ -202,21 +202,23 @@ text.
 | bearer source failure, blank or invalid token | `Unauthorized` | no request sent |
 
 **The `[CODE]` prefix.** The TinyHumans backend names every failure with an
-`errorCode`. The contract's `Error` has no field for it, so a hosted failure's
-message starts with `[CODE] ` (the code uppercased, restricted to ASCII
-letters, digits and `_`, at most 64 characters). A failure with no
+`errorCode`. A hosted failure's message starts with `[CODE] ` (the code
+uppercased, restricted to ASCII letters, digits and `_`, at most 64
+characters), and an exhausted-credit refusal is also represented by the
+typed `Error::InsufficientCredits` variant. A failure with no
 `errorCode` is filed under `UNAUTHORIZED` (401, 403), `USER_INSUFFICIENT_CREDITS`
-(402), `RATE_LIMITED` (429) or `HTTP_<status>`. `error_code(&Error) ->
-Option<&str>` reads the code back, and returns `None` for a direct failure, a
-local refusal, or a message that no longer starts with a well-formed prefix.
+(402 only when explicitly identified by the backend), `RATE_LIMITED` (429),
+`HTTP_402` for an uncoded payment-required response, or `HTTP_<status>`. A
+generic 402 is not enough evidence to classify the account as out of credits.
+`error_code(&Error) -> Option<&str>` reads the code back, and returns `None`
+for a direct failure, a local refusal, or a message that no longer starts with
+a well-formed prefix.
 
-**402 is `Engine`.** An exhausted credit balance is not transient
+**An exhausted balance is `InsufficientCredits`.** It is not transient
 (`Unavailable` would invite a retry loop that cannot succeed until someone tops
 up) and not a credential fault (`Unauthorized` would send the host to its
-sign-in flow). It is the engine refusing to serve, which is what `Engine`
-means, and the code lets a host tell it apart:
-`is_insufficient_credits(&Error)` is true for an `Engine` error whose code is
-`USER_INSUFFICIENT_CREDITS`, so a host can show a top-up prompt.
+sign-in flow). The dedicated variant lets a host show a top-up prompt without
+classifying message text.
 
 Other errors the engine raises itself: `Error::Unsupported` for a fetch mode
 other than `Hybrid`; `Error::InvalidRequest` for a malformed cursor or an
@@ -260,6 +262,16 @@ without naming `CortexEngine`:
 - `EngineCredential`: `None` (default), `Static(String)`, or
   `Dynamic(Arc<dyn BearerSource>)`. `Debug` is redacted.
 
+Hosts that bind an engine for memory operations should use
+`registry::binder::EngineBinder`. It calls the existing `build_engine`, owns a
+strong cache until explicit invalidation, and always wraps configured,
+host-installed and transient engines with `ScrubbingEngine` and `TimedEngine`.
+The optional endpoint callback supplies a host-owned fallback only when the
+settings endpoint is blank. `bind_configured` lets profile or SaaS policy
+ignore an installed host engine without clearing its slot; `bind_external`
+guards a transient tenant engine without installing it globally. The host
+still decides which engine, endpoint, credential, root and policy to pass.
+
 `build_engine` picks the wire from the id (`cortexdb` is `Direct`,
 `tinyhumans` is `TinyHumans`) and resolves the endpoint: the setting, trimmed,
 if it is not blank, else the engine's default. It returns `Error::Config` for
@@ -267,7 +279,9 @@ an unknown id; a missing credential (`None`, or a blank `Static`); and
 everything `CortexEngine::new` refuses (not an HTTP(S) URL, cleartext off
 loopback). Messages never carry the credential. These are re-exported at the
 crate root: `tinymemory_integrations::{build_engine, list_engines,
-EngineCredential}`.
+EngineCredential}`. The safe host-facing binding API is also at the crate root:
+`EngineBinder`, `Binding`, `BoundEngine`, `HOST_ENGINE_ENDPOINT` and the
+`CORTEXDB_ENGINE_ID` / `TINYHUMANS_ENGINE_ID` constants.
 
 ## MemoryConfig
 

@@ -203,3 +203,22 @@ fn runtime_shutdown_releases_worker_and_pending_work() {
     assert_eq!(pool.available(), 1, "the permit is released");
     assert!(cache.completed(&"k").is_none());
 }
+
+#[test]
+fn concurrent_acquires_never_exceed_the_pool_size() {
+    let pool = WorkerPool::new(3);
+    let granted = std::sync::Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        for _ in 0..16 {
+            scope.spawn(|| {
+                if let Some(permit) = pool.try_acquire() {
+                    granted.lock().unwrap().push(permit);
+                }
+            });
+        }
+    });
+    assert_eq!(granted.lock().unwrap().len(), 3);
+    assert_eq!(pool.available(), 0);
+    granted.lock().unwrap().clear();
+    assert_eq!(pool.available(), 3);
+}

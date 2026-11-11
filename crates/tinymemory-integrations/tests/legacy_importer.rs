@@ -19,8 +19,8 @@ use tinymemory_api::{
     ListPage, ListRequest, MemoryEngine, RecallAnswer, RecallRequest, StoreItem, StoreReceipt,
 };
 use tinymemory_integrations::import::{
-    CheckpointStore, ImportError, ImportFile, ImportPhase, Importer, MemoryCheckpointStore, Pacer,
-    RetryPolicy,
+    CheckpointStore, FailedItem, ImportError, ImportFile, ImportPhase, Importer,
+    MemoryCheckpointStore, Pacer, ResumePlan, RetryPolicy, record_resume_failure,
 };
 
 const COUNT: usize = 60;
@@ -33,12 +33,16 @@ enum Mode {
     Credits,
     /// Refuses these legacy ids as invalid, taking the rest.
     Refuse(HashSet<String>),
+    /// Refuses every bulk store as invalid, so items go one at a time, and
+    /// is unavailable after this many single stores.
+    DownAfter(usize),
 }
 
 struct Scripted {
     inner: ReferenceEngine,
     mode: Mutex<Mode>,
     calls: AtomicUsize,
+    singles: AtomicUsize,
 }
 
 impl Scripted {
@@ -47,6 +51,7 @@ impl Scripted {
             inner: ReferenceEngine::new(),
             mode: Mutex::new(mode),
             calls: AtomicUsize::new(0),
+            singles: AtomicUsize::new(0),
         })
     }
 
@@ -59,7 +64,9 @@ impl Scripted {
         match self.mode.lock().unwrap().clone() {
             Mode::Healthy => Ok(()),
             Mode::Unavailable => Err(Error::Unavailable("engine down".into())),
-            Mode::Credits => Err(Error::Engine("[USER_INSUFFICIENT_CREDITS] top up".into())),
+            Mode::Credits => Err(Error::InsufficientCredits(
+                "[USER_INSUFFICIENT_CREDITS] top up".into(),
+            )),
             Mode::Refuse(ids) => {
                 let bad = items
                     .iter()
@@ -68,6 +75,16 @@ impl Scripted {
                     Err(Error::InvalidRequest("too large".into()))
                 } else {
                     Ok(())
+                }
+            }
+            Mode::DownAfter(_) if items.len() > 1 => {
+                Err(Error::InvalidRequest("batch too large".into()))
+            }
+            Mode::DownAfter(limit) => {
+                if self.singles.fetch_add(1, Ordering::SeqCst) < limit {
+                    Ok(())
+                } else {
+                    Err(Error::Unavailable("engine down".into()))
                 }
             }
         }
@@ -165,6 +182,138 @@ async fn import(rig: &Rig) -> ImportFile {
     let begun = rig.importer.begin().unwrap();
     rig.importer.run(begun).await;
     rig.store.load()
+}
+
+#[test]
+fn resume_plan_covers_phase_billing_pause_and_retry_state() {
+    let phases = [
+        ImportPhase::Idle,
+        ImportPhase::Running,
+        ImportPhase::Done,
+        ImportPhase::Error,
+    ];
+    for phase in phases {
+        for paused_for_credits in [false, true] {
+            for billing_ok in [false, true] {
+                for paused in [false, true] {
+                    for retrying in [false, true] {
+                        let file = ImportFile {
+                            state: tinymemory_integrations::import::ImportState {
+                                phase,
+                                ..Default::default()
+                            },
+                            paused_for_credits,
+                            retrying,
+                            ..Default::default()
+                        };
+                        let expected = if paused {
+                            ResumePlan::DoNotResume
+                        } else {
+                            match phase {
+                                ImportPhase::Running if retrying => ResumePlan::ResumeRetry,
+                                ImportPhase::Running => ResumePlan::ResumeImport,
+                                ImportPhase::Error if paused_for_credits && billing_ok => {
+                                    ResumePlan::ResumeImport
+                                }
+                                _ => ResumePlan::DoNotResume,
+                            }
+                        };
+                        assert_eq!(
+                            Importer::resume_plan(&file, billing_ok, paused),
+                            expected,
+                            "phase={phase:?}, credits={paused_for_credits}, billing={billing_ok}, paused={paused}, retrying={retrying}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn store_only_resume_failure_preserves_checkpoint_and_failed_items() {
+    let mut file = ImportFile::default();
+    file.state.phase = ImportPhase::Running;
+    file.retrying = true;
+    file.failed.push(FailedItem {
+        id: "memory_docs:retry-me".to_string(),
+        reason: "invalid item".to_string(),
+    });
+    file.checkpoint.documents = Some("last-saved-document".to_string());
+    let expected_checkpoint = file.checkpoint.clone();
+    let expected_failed = file.failed.clone();
+    let store = MemoryCheckpointStore::new(file);
+
+    record_resume_failure(&store, "cannot reach engine");
+
+    let saved = store.load();
+    assert_eq!(saved.state.phase, ImportPhase::Done);
+    assert_eq!(
+        saved.state.error.as_deref(),
+        Some("the retry could not resume: cannot reach engine; press Retry again")
+    );
+    assert!(!saved.retrying);
+    assert_eq!(saved.checkpoint, expected_checkpoint);
+    assert_eq!(saved.failed, expected_failed);
+}
+
+#[test]
+fn import_resume_failure_clears_credits_pause_and_preserves_progress() {
+    let mut file = ImportFile::default();
+    file.state.phase = ImportPhase::Error;
+    file.paused_for_credits = true;
+    file.checkpoint.documents = Some("saved-document".to_string());
+    file.failed.push(FailedItem {
+        id: "memory_docs:bad-item".to_string(),
+        reason: "too large".to_string(),
+    });
+    let expected_checkpoint = file.checkpoint.clone();
+    let expected_failed = file.failed.clone();
+    let store = MemoryCheckpointStore::new(file);
+
+    record_resume_failure(&store, "account is signed out");
+
+    let saved = store.load();
+    assert_eq!(saved.state.phase, ImportPhase::Error);
+    assert_eq!(
+        saved.state.error.as_deref(),
+        Some("the import could not resume: account is signed out")
+    );
+    assert!(!saved.paused_for_credits);
+    assert_eq!(saved.checkpoint, expected_checkpoint);
+    assert_eq!(saved.failed, expected_failed);
+}
+
+struct RejectingCheckpointStore {
+    file: Mutex<ImportFile>,
+    attempts: AtomicUsize,
+}
+
+impl CheckpointStore for RejectingCheckpointStore {
+    fn load(&self) -> ImportFile {
+        self.file.lock().unwrap().clone()
+    }
+
+    fn save(&self, _file: &ImportFile) -> Result<(), String> {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+        Err("checkpoint is read-only".to_string())
+    }
+}
+
+#[test]
+fn store_only_resume_failure_logs_a_rejected_save_without_mutating_loaded_state() {
+    let mut file = ImportFile::default();
+    file.state.phase = ImportPhase::Running;
+    file.checkpoint.documents = Some("last-known-checkpoint".to_string());
+    let store = RejectingCheckpointStore {
+        file: Mutex::new(file.clone()),
+        attempts: AtomicUsize::new(0),
+    };
+
+    record_resume_failure(&store, "engine unavailable");
+
+    assert_eq!(store.attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(store.load(), file, "a failed save cannot appear persisted");
 }
 
 #[test]
@@ -389,4 +538,18 @@ fn the_persisted_file_keeps_its_wire_shape() {
     let old: ImportFile =
         serde_json::from_str(r#"{"state":{"phase":"done","imported":2,"total":2}}"#).unwrap();
     assert_eq!(old.state.phase, ImportPhase::Done);
+}
+
+#[tokio::test]
+async fn a_failure_in_the_one_by_one_fallback_checkpoints_the_last_stored_item() {
+    let dir = legacy();
+    let engine = Scripted::new(Mode::DownAfter(5));
+    let rig = rig(dir.path(), engine, true);
+    let file = import(&rig).await;
+    assert_eq!(file.state.imported, 5);
+    assert_eq!(
+        file.checkpoint.documents.as_deref(),
+        Some("d004"),
+        "the checkpoint must not pass an item that was never stored"
+    );
 }

@@ -72,14 +72,18 @@
 
 mod types;
 
+pub mod date_hint;
+pub mod turn;
+pub mod window;
+
 use std::future::Future;
 use std::sync::Arc;
 
 use futures::future::join;
 use tinymemory_api::{
-    ConsolidateRequest, Error, ItemKind, MemoryEngine, MemoryMeta, MetaFilter, Namespace,
-    ObservedActor, Reach, Result, Role, SourceKind, SourceRef, StoreItem, StoreReceipt, TimeHint,
-    Turn, TurnRange, WriteOptions,
+    ConsolidateRequest, Error, ExploreRequest, Facet, ItemKind, MemoryEngine, MemoryMeta,
+    MetaFilter, Namespace, ObservedActor, Reach, Result, Role, SourceKind, SourceRef, StoreItem,
+    StoreReceipt, TimeHint, Turn, TurnRange, WriteOptions,
 };
 
 use crate::background::{BackgroundJob, BackgroundRunner, JobReport, builds_on_its_own};
@@ -91,8 +95,8 @@ use crate::recall::{
 use crate::tools::MemoryTools;
 
 pub use types::{
-    Compaction, DEFAULT_TURN_BUDGET_TOKENS, PostTurn, PostTurnReport, PreTurn, RecallPolicy,
-    SessionStart, TurnContext,
+    AgentCount, Compaction, DEFAULT_TURN_BUDGET_TOKENS, PostTurn, PostTurnReport, PreTurn, Preview,
+    PreviewMode, RecallPolicy, RecallSettings, SessionStart, TurnContext,
 };
 
 /// Heading of the learnings section.
@@ -319,6 +323,68 @@ impl AgentMemory {
         BackgroundRunner::new(self.engine.clone(), self.layout.clone())
     }
 
+    /// The pack a turn or session would receive, without writing a turn.
+    ///
+    /// A nonblank `query` previews a query-ranked turn and ignores `thread_id`.
+    /// A missing or blank query previews a session start or resume; a blank
+    /// `thread_id` is treated as absent. Engine failures remain available as
+    /// typed skipped-section reasons in the returned pack.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidRequest`] when the preview request or policy is
+    /// invalid.
+    pub async fn preview(
+        &self,
+        query: Option<&str>,
+        thread_id: Option<&str>,
+    ) -> Result<types::Preview> {
+        let query = query.filter(|query| !query.trim().is_empty());
+        let (mode, pack) = match query {
+            Some(query) => (types::PreviewMode::Turn, self.recall(query).await?),
+            None => {
+                let thread_id = thread_id
+                    .filter(|thread_id| !thread_id.trim().is_empty())
+                    .map(str::to_string);
+                (
+                    types::PreviewMode::Session,
+                    self.start_session(SessionStart {
+                        thread_id,
+                        focus: None,
+                    })
+                    .await?,
+                )
+            }
+        };
+        Ok(types::Preview { mode, pack })
+    }
+
+    /// Agents with conversations below this memory layout's root, most turns
+    /// first.
+    ///
+    /// # Errors
+    ///
+    /// Any error returned by the memory engine's agent-facet exploration.
+    pub async fn agents(&self) -> Result<Vec<types::AgentCount>> {
+        let page = self
+            .engine
+            .explore(ExploreRequest {
+                facet: Facet::Agent,
+                filter: self.layout.conversations_filter(None),
+                limit: 200,
+                scan_limit: 20_000,
+            })
+            .await?;
+        Ok(page
+            .buckets
+            .into_iter()
+            .map(|bucket| types::AgentCount {
+                agent_id: bucket.value,
+                turns: bucket.count,
+            })
+            .collect())
+    }
+
     /// The model-facing memory tools for this agent: writes land at its node,
     /// reads see its node and every node above it ([`Reach::of`]), core
     /// scopes included.
@@ -346,6 +412,37 @@ impl AgentMemory {
         self.read(start.focus, sections).await
     }
 
+    /// Recalls the context for a turn without logging it. A resumed turn gets
+    /// its earlier thread history, while `in_prompt_from` excludes turns the
+    /// host already included in the prompt.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidRequest`] for a blank thread id or user text. Engine
+    /// failures never fail the call.
+    pub(crate) async fn pre_turn_read(&self, turn: &PreTurn) -> Result<ContextPack> {
+        let thread_id = non_blank(&turn.thread_id, "thread id")?;
+        let text = non_blank(&turn.user_text, "user text")?;
+        let mut sections = Vec::new();
+        if turn.resumed && self.policy.history_limit > 0 {
+            sections.push(self.thread_section(thread_id, self.policy.history_limit));
+        }
+        sections.extend(self.standard_sections());
+        let mut request = self.request(Some(text.to_string()), sections);
+        request.exclude_thread = Some(ThreadWindow {
+            thread_id: thread_id.to_string(),
+            from_turn: turn.in_prompt_from,
+        });
+        crate::recall::run(
+            self.engine.as_ref(),
+            &request,
+            None,
+            None,
+            self.team_exclusion(&request),
+        )
+        .await
+    }
+
     /// Logs the user's turn and, concurrently, recalls the context to inject
     /// before the model runs.
     ///
@@ -358,7 +455,8 @@ impl AgentMemory {
     /// [`Error::InvalidRequest`] for a blank thread id or text. Engine
     /// failures never fail the call.
     pub async fn pre_turn(&self, turn: PreTurn) -> Result<TurnContext> {
-        self.pre_turn_with(turn, false, None).await
+        let resumed = turn.resumed;
+        self.pre_turn_with(turn, resumed, None).await
     }
 
     /// [`AgentMemory::pre_turn`] for a session that resumes this thread after
@@ -372,7 +470,15 @@ impl AgentMemory {
     ///
     /// As [`AgentMemory::pre_turn`].
     pub async fn pre_turn_resumed(&self, turn: PreTurn) -> Result<TurnContext> {
-        self.pre_turn_with(turn, true, None).await
+        self.pre_turn_with(
+            PreTurn {
+                resumed: true,
+                ..turn
+            },
+            true,
+            None,
+        )
+        .await
     }
 
     /// [`AgentMemory::pre_turn`] (or, `resumed`,
@@ -391,7 +497,7 @@ impl AgentMemory {
         resumed: bool,
         hint: impl Future<Output = Option<TimeHint>> + Send,
     ) -> Result<TurnContext> {
-        self.pre_turn_with(turn, resumed, Some(Box::pin(hint)))
+        self.pre_turn_with(PreTurn { resumed, ..turn }, resumed, Some(Box::pin(hint)))
             .await
     }
 
@@ -411,6 +517,7 @@ impl AgentMemory {
                 ..Turn::new(Role::User, text)
             },
             turn.observed_actor.clone(),
+            turn.channel.clone(),
         );
         let id = tinymemory_api::ItemId::new(item.fingerprint());
         let window = ThreadWindow {
@@ -475,6 +582,7 @@ impl AgentMemory {
                 ..Turn::new(Role::Assistant, text)
             },
             None,
+            turn.channel.clone(),
         );
         let receipt = self
             .engine
@@ -674,6 +782,7 @@ impl AgentMemory {
         index: u32,
         turn: Turn,
         observed_actor: Option<ObservedActor>,
+        channel: Option<String>,
     ) -> StoreItem {
         StoreItem::Conversation {
             meta: MemoryMeta {
@@ -688,6 +797,7 @@ impl AgentMemory {
                     kind: SourceKind::Conversation,
                     id: Some(thread_id.to_string()),
                 },
+                channel,
                 observed_at: turn.at,
                 observed_actor,
                 ..MemoryMeta::default()
@@ -734,3 +844,11 @@ fn gist(turns: &[Turn]) -> Option<String> {
 #[cfg(test)]
 #[path = "mod_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "turn_tests.rs"]
+mod turn_tests;
+
+#[cfg(test)]
+#[path = "turn_runtime_tests.rs"]
+mod turn_runtime_tests;

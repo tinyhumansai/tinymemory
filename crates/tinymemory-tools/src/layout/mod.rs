@@ -32,7 +32,9 @@
 //! ([`MemoryLayout::with_pooled_conversations`]) keeps every agent's turns at
 //! one node (`ws:main`), each turn labelled with its agent id: an agent's
 //! history is that node filtered to its id, and the team section reads it
-//! excluding that id. The host's root still bounds both reads.
+//! excluding that id. The builder accepts the absolute namespace, including
+//! the layout root (`team:acme/ws:main`); [`MemoryLayout::pooled_conversations_node`]
+//! returns that same absolute namespace. The host's root still bounds both reads.
 //!
 //! **Core scopes** share memory beyond one layout. A host that nests every
 //! tenant under one company node (`ws:acme/team:hive`) can name an ancestor
@@ -56,6 +58,7 @@
 //! # Ok::<(), tinymemory_api::Error>(())
 //! ```
 
+pub mod identity;
 pub mod placement;
 mod source;
 mod types;
@@ -93,24 +96,31 @@ impl MemoryLayout {
         Ok(Self { root, pooled: None })
     }
 
-    /// The same layout, keeping every agent's conversations at `node` below
-    /// the root (`ws:main`) rather than at a node per agent. Each turn
-    /// carries its agent id, so an agent's history is still its own.
+    /// The same layout, keeping every agent's conversations at the absolute
+    /// `node` rather than at a node per agent. The node must be strictly
+    /// below this layout's root. Each turn carries its agent id, so an
+    /// agent's history is still its own.
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidRequest`] for the root itself, or a node too deep
-    /// below the root.
+    /// [`Error::InvalidRequest`] when `node` is the root, is outside the
+    /// layout root, or lies beyond the namespace depth limit.
     pub fn with_pooled_conversations(mut self, node: &Namespace) -> Result<Self> {
-        if node.is_root() {
-            return Err(Error::InvalidRequest(
-                "pooled conversations need a node below the root".to_string(),
-            ));
+        if node == &self.root || !Reach::subtree(self.root.clone()).admits(node) {
+            return Err(Error::InvalidRequest(format!(
+                "pooled conversations must be below layout root `{}`",
+                self.root
+            )));
         }
-        let mut segments = self.root.segments().to_vec();
-        segments.extend(node.segments().iter().cloned());
-        self.pooled = Some(Namespace::new(segments)?);
+        self.pooled = Some(node.clone());
         Ok(self)
+    }
+
+    /// The absolute node holding every agent's conversations, when pooling
+    /// is enabled ([`Self::with_pooled_conversations`]).
+    #[must_use]
+    pub fn pooled_conversations_node(&self) -> Option<&Namespace> {
+        self.pooled.as_ref()
     }
 
     /// Whether every agent's conversations are kept at one node

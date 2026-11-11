@@ -166,11 +166,14 @@ fn an_invalid_entry_is_refused() {
 #[test]
 fn account_wide_failures_are_told_from_item_failures() {
     let wide = |error| SyncError::Engine(error).is_account_wide();
+    assert!(wide(Error::Off("disabled".into())));
     assert!(wide(Error::Unauthorized("x".into())));
-    assert!(wide(Error::Unavailable("x".into())));
+    assert!(wide(Error::InsufficientCredits("top up".into())));
     assert!(wide(Error::Engine(
-        "[USER_INSUFFICIENT_CREDITS] top up".into()
+        "[MEMORY_PLAN_REQUIRED] not in the plan".into()
     )));
+    assert!(!wide(Error::Unavailable("request timed out".into())));
+    assert!(!wide(Error::Unavailable("rate limited".into())));
     assert!(!wide(Error::Engine("[OTHER] nope".into())));
     assert!(!wide(Error::InvalidRequest("x".into())));
     assert!(!SyncError::Read("x".into()).is_account_wide());
@@ -298,13 +301,38 @@ async fn nothing_stored_surfaces_the_item_error() {
 
 #[tokio::test]
 async fn an_account_wide_refusal_stops_without_retrying_item_by_item() {
-    let mut engine = Scripted::new();
-    engine.account = Some(Error::Unavailable("down".into()));
-    let error = store_all(&engine, "s", placed(3, "source:files"))
-        .await
-        .unwrap_err();
-    assert!(error.is_account_wide());
-    assert_eq!(engine.singles.load(Ordering::SeqCst), 0);
+    for error in [
+        Error::Off("disabled".into()),
+        Error::Unauthorized("rejected".into()),
+        Error::InsufficientCredits("top up".into()),
+    ] {
+        let mut engine = Scripted::new();
+        engine.account = Some(error);
+        let error = store_all(&engine, "s", placed(3, "source:files"))
+            .await
+            .unwrap_err();
+        assert!(error.is_account_wide());
+        assert_eq!(engine.singles.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn request_timeouts_and_rate_limits_retry_batch_items_individually() {
+    for message in ["request timed out", "rate limited"] {
+        let mut engine = Scripted::new();
+        engine.account = Some(Error::Unavailable(message.into()));
+        let error = store_all(&engine, "s", placed(3, "source:files"))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, SyncError::Engine(Error::Unavailable(_))));
+        assert!(!error.is_account_wide());
+        assert_eq!(engine.batches.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            engine.singles.load(Ordering::SeqCst),
+            3,
+            "a request-specific transient batch failure must not stop its siblings"
+        );
+    }
 }
 
 #[tokio::test]
@@ -316,6 +344,90 @@ async fn touched_nodes_are_the_ones_that_received_items() {
     let nodes: Vec<String> = stored.touched.iter().map(ToString::to_string).collect();
     assert_eq!(nodes.len(), 2);
     assert!(nodes.contains(&"source:files".to_string()));
+}
+
+#[tokio::test]
+async fn store_placed_files_items_and_builds_one_job_per_touched_node() {
+    use tinymemory_api::{ConsolidateRequest, Consolidation, ItemKind, Reach};
+    use tinymemory_tools::BackgroundJob;
+
+    let engine = ReferenceEngine::new().with_consolidation(Consolidation::OnDemand);
+    let files: Namespace = "team:acme/source:files".parse().unwrap();
+    let github: Namespace = "team:acme/source:github".parse().unwrap();
+    let items = vec![
+        StoreItem::document(
+            "notes",
+            MemoryMeta {
+                agent_id: Some("agent-1".into()),
+                ..MemoryMeta::default()
+            },
+        ),
+        StoreItem::document("repo", MemoryMeta::default()),
+        StoreItem::document("another note", MemoryMeta::default()),
+    ];
+    let mut index = 0;
+    let result = store_placed(&engine, "source-1", items, |_| {
+        index += 1;
+        Ok(if index == 2 {
+            github.clone()
+        } else {
+            files.clone()
+        })
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(result.stored.stored, 3);
+    assert_eq!(
+        result.stored.touched,
+        [files.clone(), github.clone()].into()
+    );
+    assert_eq!(
+        result.jobs,
+        vec![
+            BackgroundJob::BuildBeliefs {
+                request: ConsolidateRequest::new(Reach::exact(files.clone()))
+                    .kinds([ItemKind::Document]),
+            },
+            BackgroundJob::BuildBeliefs {
+                request: ConsolidateRequest::new(Reach::exact(github.clone()))
+                    .kinds([ItemKind::Document]),
+            },
+        ]
+    );
+    let listed = engine
+        .list(tinymemory_api::ListRequest::new(
+            tinymemory_api::MetaFilter::default(),
+            10,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(listed.items[0].meta.namespace, files);
+    assert_eq!(listed.items[0].meta.agent_id, None);
+}
+
+#[tokio::test]
+async fn store_placed_skips_jobs_without_on_demand_consolidation() {
+    use tinymemory_api::Consolidation;
+
+    let node: Namespace = "source:files".parse().unwrap();
+    for mode in [
+        Consolidation::None,
+        Consolidation::Scheduled,
+        Consolidation::Automatic,
+    ] {
+        let engine = ReferenceEngine::new().with_consolidation(mode);
+        let result = store_placed(
+            &engine,
+            "source-1",
+            vec![StoreItem::document("notes", MemoryMeta::default())],
+            |_| Ok(node.clone()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.stored.stored, 1, "{mode:?}");
+        assert!(result.jobs.is_empty(), "{mode:?}");
+    }
 }
 
 #[cfg(feature = "sources-network")]

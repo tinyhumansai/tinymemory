@@ -28,7 +28,8 @@ thiserror = { version = "2", optional = true }
 log = { version = "0.4", optional = true }
 
 # --- safety ---
-# The scrubbers: `safety` adds only `scrub_item` over a `StoreItem`.
+# Local secret and PII scrubbing, the `ScrubbingEngine` and `TimedEngine`
+# decorators, and the safe engine-composition path used by the registry.
 tinyredact = { path = "../tinyredact", optional = true }
 
 # --- brain ---
@@ -53,22 +54,18 @@ futures = { version = "0.3", optional = true }
 sha2 = { version = "0.11", optional = true }
 
 # --- documents-office ---
-# Text out of the formats people actually drop into memory — a contract PDF, a
-# spec `.docx`, a pricing `.xlsx`, a deck. All pure Rust with no system
-# libraries. `pdf-extract` reads a PDF's text layer. `zip` + `quick-xml` are
-# the whole of `.docx` and `.pptx`, which are zip archives of XML. `.xlsx` is
-# not — shared-string tables and cell typing make hand-parsing it a liability —
-# so `calamine` reads that one. `zip` and `quick-xml` are the versions
-# `calamine` already links, so the graph carries one copy of each.
+# Text out of PDFs, Word documents and PowerPoint decks. These readers are
+# pure Rust with no system libraries. Spreadsheet import is temporarily
+# disabled until a safe Calamine release is published.
 pdf-extract = { version = "0.12", optional = true }
-calamine = { version = "0.36", optional = true }
-quick-xml = { version = "0.41", optional = true }
-zip = { version = "8", default-features = false, features = ["deflate"], optional = true }
+quick-xml = { version = "0.42", optional = true }
+zip = { version = "9", default-features = false, features = ["deflate"], optional = true }
 
 # --- sources ---
-# `MemorySourceEntry` and friends appear in generated schemas, same as the
-# contract crate's own types.
+# JSON Schema derives are only needed by hosts that generate schemas.
 schemars = { version = "1.2", optional = true }
+# URL parsing for source target validation, without enabling a network client.
+url = { version = "2", optional = true }
 # The folder reader compiles a source's glob to a regex; safety's credential
 # and PII patterns are regexes too.
 regex = { version = "1.10", optional = true }
@@ -85,7 +82,7 @@ tracing = { version = "0.1", optional = true }
 # `memory_tree/chunks.db`. Bundled so the importer does not depend on a system
 # SQLite; `functions` lets a count apply the importer's own blank-text test in
 # SQL.
-rusqlite = { version = "0.40", features = ["bundled", "functions"], optional = true }
+rusqlite = { version = "0.41", features = ["bundled", "functions"], optional = true }
 
 [dev-dependencies]
 # The behavioural suite every engine must pass, run over both CortexDB wires'
@@ -104,7 +101,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The format and office tests build their OOXML fixtures in code.
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # `MemoryConfig` round-trips through the TOML a host stores it in.
 toml = "1.1"
 
@@ -113,26 +110,30 @@ toml = "1.1"
 default = ["cortex"]
 # `cortex::CortexEngine` over both wires (`cortexdb` direct `/v1/*`, and
 # `tinyhumans` behind the TinyHumans backend `/memory/*`), plus `registry`
-# (`list_engines`, `build_engine`) and `config` (`MemoryConfig`).
-cortex = ["dep:async-trait", "dep:serde", "dep:serde_json", "dep:reqwest", "dep:tokio", "dep:futures", "dep:sha2", "dep:log"]
+# (`list_engines`, `build_engine`, guarded `EngineBinder`) and `config`
+# (`MemoryConfig`). It implies `safety` so every binder result is scrubbed.
+cortex = ["dep:async-trait", "dep:serde", "dep:serde_json", "dep:reqwest", "dep:tokio", "dep:futures", "dep:sha2", "dep:log", "safety"]
 # `documents`: format sniffing and conversion to markdown, emitting
 # `StoreItem::Document`. Does no I/O.
 documents = ["dep:async-trait", "dep:serde", "dep:serde_json", "dep:thiserror"]
-# `documents::OfficeConverter`: PDF, DOCX, PPTX and XLSX to markdown, for a
+# `documents::OfficeConverter`: PDF, DOCX and PPTX to markdown, for a
 # host to prepend to its `ConverterChain`. Off by default because a PDF parser
-# and a spreadsheet reader are real weight.
-documents-office = ["documents", "dep:pdf-extract", "dep:calamine", "dep:quick-xml", "dep:zip"]
+# is real weight. XLSX is recognized but temporarily unsupported.
+documents-office = ["documents", "dep:pdf-extract", "dep:quick-xml", "dep:zip"]
 # `brain`: converting raw files into `tinymemory_tools::BrainDocument`s
 # placed under the source type their format implies.
 brain = ["documents", "dep:tinymemory-tools"]
-# `sources`: readers that turn folders, files and conversations into
-# `StoreItem`s. Links no HTTP stack.
-sources = ["documents", "dep:schemars", "dep:regex", "dep:walkdir", "dep:chrono", "dep:log", "dep:tracing"]
+# `sources`: readers, host source types/validation, state types and placement
+# support. Target validation uses `url` but links no HTTP client.
+sources = ["documents", "dep:tinymemory-tools", "dep:url", "dep:regex", "dep:walkdir", "dep:chrono", "dep:log", "dep:tracing"]
+# JSON Schema derives for source reader and host configuration types.
+schema = ["sources", "dep:schemars"]
 # The readers that fetch over the network — GitHub, RSS, web pages — and
 # `sources::fetch::fetch_url`, all behind the shared SSRF guard.
 sources-network = ["sources", "dep:reqwest", "dep:futures", "dep:tokio", "tokio/process", "tokio/io-util", "tokio/net"]
-# `safety`: secret and PII scrubbing for a `StoreItem` before it is stored.
-safety = ["dep:tinyredact"]
+# `safety`: item scrubbing plus the `ScrubbingEngine` and `TimedEngine`
+# decorators used by every binder result.
+safety = ["dep:tinyredact", "dep:log", "dep:async-trait"]
 # `import`: reads a legacy v1 (embedded TinyCortex) workspace and migrates it
 # into any engine, resumably.
 legacy-import = ["dep:rusqlite", "dep:serde", "dep:serde_json", "dep:thiserror", "dep:async-trait", "dep:log"]
@@ -178,6 +179,10 @@ required-features = ["legacy-import"]
 [[test]]
 name = "reader_dispatch"
 required-features = ["sources"]
+
+[[test]]
+name = "binder_timing"
+required-features = ["cortex"]
 
 [lints]
 workspace = true

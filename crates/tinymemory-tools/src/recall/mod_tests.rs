@@ -142,13 +142,14 @@ async fn excluded_ids_and_the_live_thread_window_are_left_out() {
     request.exclude_ids = older.refs.clone();
     let none = holistic_recall(&engine, &request).await.unwrap();
     assert!(none.is_empty());
-    assert_eq!(none.skipped[0].reason, "empty");
+    assert_eq!(none.skipped[0].reason, SkipReason::Empty);
 }
 
 /// The reference engine with recall (and optionally fetch) broken.
 struct Broken {
     inner: ReferenceEngine,
     fetch_too: bool,
+    recall_error: Error,
 }
 
 #[async_trait]
@@ -160,7 +161,7 @@ impl tinymemory_api::MemoryEngine for Broken {
         EngineHealth::Ok
     }
     async fn recall(&self, _req: RecallRequest) -> tinymemory_api::Result<RecallAnswer> {
-        Err(Error::Unavailable("recall is down".into()))
+        Err(self.recall_error.clone())
     }
     async fn fetch(&self, req: FetchRequest) -> tinymemory_api::Result<FetchPage> {
         if self.fetch_too {
@@ -184,13 +185,17 @@ async fn a_failed_answer_falls_back_to_fetch_only_when_asked() {
     let engine = Broken {
         inner: seeded().await,
         fetch_too: false,
+        recall_error: Error::Unavailable("recall is down".into()),
     };
     let mut section = ScopeSection::answer("Refunds", "refunds", docs(), 3);
     let plain = holistic_recall(&engine, &HolisticRecall::new(None, vec![section.clone()]))
         .await
         .unwrap();
     assert!(plain.is_empty());
-    assert!(plain.skipped[0].reason.contains("recall is down"));
+    assert!(matches!(
+        &plain.skipped[0].reason,
+        SkipReason::Engine(Error::Unavailable(message)) if message == "recall is down"
+    ));
 
     if let SectionQuery::Answer {
         fallback_to_fetch, ..
@@ -213,6 +218,7 @@ async fn a_failing_section_never_fails_the_pack() {
     let engine = Broken {
         inner: seeded().await,
         fetch_too: true,
+        recall_error: Error::Unauthorized("credential expired".into()),
     };
     let request = HolisticRecall::new(
         Some("refunds".into()),
@@ -224,7 +230,37 @@ async fn a_failing_section_never_fails_the_pack() {
     let pack = holistic_recall(&engine, &request).await.unwrap();
     assert_eq!(pack.skipped.len(), 1);
     assert_eq!(pack.skipped[0].heading, "Docs");
+    assert!(matches!(
+        &pack.skipped[0].reason,
+        SkipReason::Engine(error @ Error::Unavailable(message))
+            if message == "fetch is down" && !error.is_account_wide()
+    ));
     assert!(pack.markdown.contains("## Learnings"));
+}
+
+#[tokio::test]
+async fn account_wide_errors_keep_their_typed_cause_when_a_recall_section_is_skipped() {
+    let errors = [
+        Error::Off("opaque off detail".into()),
+        Error::InsufficientCredits("opaque credit detail".into()),
+        Error::Unauthorized("opaque auth detail".into()),
+    ];
+
+    for error in errors {
+        let engine = Broken {
+            inner: seeded().await,
+            fetch_too: false,
+            recall_error: error.clone(),
+        };
+        let request = HolisticRecall::new(
+            None,
+            vec![ScopeSection::answer("Account", "question", docs(), 1)],
+        );
+        let pack = holistic_recall(&engine, &request).await.unwrap();
+
+        assert_eq!(pack.skipped[0].reason, SkipReason::Engine(error.clone()));
+        assert!(error.is_account_wide(), "{error:?}");
+    }
 }
 
 #[tokio::test]

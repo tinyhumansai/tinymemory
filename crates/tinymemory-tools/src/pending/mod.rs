@@ -15,7 +15,17 @@
 //! The crate links no executor and does no I/O. The host supplies the
 //! store, the [`WriteExecutor`] that runs one write (and wraps it in its own
 //! timeout), and decides when [`PendingWrites::drain`] is called.
+//!
+//! Hosts may share owner generations and erasure barriers through
+//! [`OwnerRegistry`]. Automatic mutations capture an epoch before scheduling;
+//! [`AutomaticMutation::run`] drops work made stale by a later fence. A
+//! [`OwnerFence`] holds exclusive access across the host's explicit erase.
+//! [`PendingPartitions`] shares one weakly cached queue per durable partition,
+//! and [`PartitionLocks`] supplies weakly cached drain locks keyed by each
+//! partition, leaving storage paths and persistence to the host.
 
+mod owner;
+mod partition;
 mod types;
 
 use std::sync::Mutex;
@@ -26,6 +36,8 @@ use sha2::{Digest, Sha256};
 
 use crate::list_store::{ListStore, StoreError};
 
+pub use owner::{AutomaticMutation, OwnerFence, OwnerRegistry, OwnerState};
+pub use partition::{PartitionLocks, PendingPartitions};
 pub use types::{
     Ack, Binding, Entry, Epoch, FenceToken, Limits, PendingError, WriteExecutor, WriteGate,
     WriteOperation,

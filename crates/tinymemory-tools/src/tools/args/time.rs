@@ -1,7 +1,7 @@
 //! Reading a model's `refers_to`: the local days a question is about.
 
 use chrono::NaiveDate;
-use tinymemory_api::{Result, TimeHint};
+use tinymemory_api::{Error, Result, TimeHint};
 
 use super::Args;
 use crate::tools::ToolScope;
@@ -35,14 +35,16 @@ pub(crate) fn time_hint(args: &Args<'_>, key: &str, scope: &ToolScope) -> Result
     }
     // The range is fine, so a refusal here is the host's zone, not the
     // model's dates: say so instead of sending the model after `to`.
-    TimeHint::new(from, to, scope.zone.clone())
-        .map(Some)
-        .map_err(|_| {
-            tinymemory_api::Error::Config(format!(
-                "the host's time zone {:?} is not an IANA zone",
-                scope.zone.as_deref().unwrap_or_default()
-            ))
-        })
+    crate::ops::time_hint(
+        Some(crate::ops::DateRange { from, to: Some(to) }),
+        scope.zone.as_deref(),
+    )
+    .map_err(|_| {
+        Error::Config(format!(
+            "the host's time zone {:?} is not an IANA zone",
+            scope.zone.as_deref().unwrap_or_default()
+        ))
+    })
 }
 
 #[cfg(test)]

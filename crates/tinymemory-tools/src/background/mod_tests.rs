@@ -11,6 +11,51 @@ use tinymemory_api::{
 
 use super::*;
 use crate::layout::BrainSource;
+use crate::run_slots::StartGate;
+
+struct MutexStartGate(std::sync::Mutex<()>);
+
+impl StartGate for MutexStartGate {
+    fn with_gate(&self, reserve: &mut dyn FnMut() -> bool) -> bool {
+        let _guard = self.0.lock().unwrap();
+        reserve()
+    }
+}
+
+#[test]
+fn run_slots_exclude_duplicate_keys_and_release_on_guard_drop() {
+    let slots = crate::run_slots::RunSlots::new();
+    let first = slots.try_acquire("workspace-a".to_string());
+    assert!(first.is_some());
+    assert!(slots.is_running(&"workspace-a".to_string()));
+    assert!(slots.try_acquire("workspace-b".to_string()).is_some());
+    assert!(
+        slots.try_acquire("workspace-a".to_string()).is_none(),
+        "the same key cannot be reserved twice"
+    );
+
+    drop(first);
+    assert!(
+        !slots.is_running(&"workspace-a".to_string()),
+        "dropping the guard releases the reservation"
+    );
+    assert!(slots.try_acquire("workspace-a".to_string()).is_some());
+}
+
+#[test]
+fn start_gate_holds_the_shared_lock_while_peer_check_and_reservation_run() {
+    let gate = MutexStartGate(std::sync::Mutex::new(()));
+    let mut reserved = false;
+    assert!(gate.with_gate(&mut || {
+        assert!(
+            gate.0.try_lock().is_err(),
+            "the callback runs while the shared import/migration lock is held"
+        );
+        reserved = true;
+        true
+    }));
+    assert!(reserved);
+}
 
 fn runner(engine: Arc<dyn MemoryEngine>) -> BackgroundRunner {
     BackgroundRunner::new(engine, MemoryLayout::default())

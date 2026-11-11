@@ -185,6 +185,28 @@ async fn a_narrower_erasure_forgets_each_scopes_events() {
 }
 
 #[tokio::test]
+async fn erasing_only_the_tenant_node_does_not_purge_the_tenant() {
+    let (endpoint, proxy) = proxied_double().await;
+    let engine = proxied_engine(&endpoint);
+    engine.store(learning("user:alice")).await.unwrap();
+    engine
+        .store(learning("user:alice/agent:helper"))
+        .await
+        .unwrap();
+    let alice = proxy.tenant("alice").unwrap();
+    assert_eq!(alice.event_count(), 2);
+    engine
+        .erase(EraseRequest::new(Reach::exact(
+            "user:alice".parse().unwrap(),
+        )))
+        .await
+        .unwrap();
+    assert!(proxy.purged.lock().unwrap().is_empty(), "no tenant purge");
+    assert_eq!(alice.event_count(), 1, "the agent's learning below is kept");
+    all_named(&proxy, "alice");
+}
+
+#[tokio::test]
 async fn erasing_the_whole_tree_names_no_tenant_and_is_refused() {
     let (endpoint, proxy) = proxied_double().await;
     let mut request = EraseRequest::new(Reach::subtree(Namespace::ROOT));

@@ -332,6 +332,71 @@ pub struct EngineDescriptor {
     pub consolidation: Consolidation,
 }
 
+/// Version of the TinyMemory engine contract reported in subsystem status.
+pub const CONTRACT_VERSION: &str = "2.0";
+
+/// Health state suitable for reporting to a host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EngineStatusHealth {
+    /// The engine is serving normally.
+    Ready,
+    /// The engine is serving with reduced health.
+    Degraded,
+    /// The configured engine is not serving.
+    Down,
+    /// No usable engine is configured.
+    Off,
+}
+
+/// Engine health and contract capabilities for a host subsystem status row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EngineStatus {
+    /// Health state of the engine.
+    pub health: EngineStatusHealth,
+    /// Reason for a degraded, down, or off state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Operations the TinyMemory v2 contract provides.
+    pub capabilities: Vec<&'static str>,
+    /// TinyMemory contract version.
+    pub contract_version: &'static str,
+}
+
+impl EngineStatus {
+    /// Builds a status row from an engine descriptor and its current health.
+    #[must_use]
+    pub fn from_engine(descriptor: &EngineDescriptor, health: EngineHealth) -> Self {
+        let (health, reason) = match health {
+            EngineHealth::Ok => (EngineStatusHealth::Ready, None),
+            EngineHealth::Degraded(reason) => (EngineStatusHealth::Degraded, Some(reason)),
+            EngineHealth::Down(reason) => (EngineStatusHealth::Down, Some(reason)),
+        };
+        Self {
+            health,
+            reason,
+            capabilities: operations_for(descriptor),
+            contract_version: CONTRACT_VERSION,
+        }
+    }
+
+    /// Builds the status row for a configuration with no usable engine.
+    #[must_use]
+    pub fn off(reason: impl Into<String>) -> Self {
+        Self {
+            health: EngineStatusHealth::Off,
+            reason: Some(reason.into()),
+            capabilities: Vec::new(),
+            contract_version: CONTRACT_VERSION,
+        }
+    }
+}
+
+/// Operations every v2 engine serves.
+fn operations_for(_descriptor: &EngineDescriptor) -> Vec<&'static str> {
+    vec!["recall", "fetch", "store", "forget", "list"]
+}
+
 impl EngineDescriptor {
     /// Whether the engine serves `mode`.
     #[must_use]

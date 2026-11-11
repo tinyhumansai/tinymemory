@@ -27,10 +27,22 @@
 //!
 //! The citations are the conversation's items, at most `limit`; the evidence
 //! may hold more events than that (each pack's events budget is `2 * limit`).
+//!
+//! **Deadline.** The packs are built at once and waited for at most 12
+//! seconds from the start of the recall. A pack still building then is left
+//! out (logged as a warning), and the evidence is rendered from the packs
+//! that arrived, still most specific first. A host bounds a memory tool call
+//! (OpenHuman: 15 seconds), and one scope's pack can take that long on its
+//! own, so without the deadline the slowest scope decided whether any
+//! evidence arrived. A recall that left a pack out says so: if the packs
+//! that arrived hold nothing, it fails as unavailable (so does one where no
+//! pack arrived) rather than claim memory holds nothing; otherwise the
+//! evidence ends with a note that memory was only partly searched. A pack
+//! that fails still fails the recall, as before.
 
 use std::collections::HashSet;
 
-use futures::{StreamExt, TryStreamExt, stream};
+use futures::{StreamExt, stream};
 use serde_json::Value;
 use tinymemory_api::{
     Citation, ItemId, ItemKind, MetaFilter, RecallAnswer, RecallRequest, Role, ThreadWindow,
@@ -41,7 +53,7 @@ use super::fetch::interleave;
 use super::items::{keeps, located_meta};
 use super::recall::PACKS_AT_ONCE;
 use crate::cortex::envelope::{Envelope, decode_event};
-use crate::cortex::error::Result;
+use crate::cortex::error::{Error, Result};
 
 /// What one pack contributes to the evidence.
 #[derive(Debug, Default)]
@@ -256,6 +268,66 @@ fn render(facts: &[String], beliefs: &[String], events: &[Envelope]) -> String {
 }
 
 impl CortexEngine {
+    /// The packs for `paths` that arrive within the evidence deadline (see
+    /// the module docs), in `paths` order, and how many were left out.
+    async fn packs_by_deadline(
+        &self,
+        req: &RecallRequest,
+        paths: &[String],
+    ) -> Result<(Vec<Vec<(usize, Value)>>, usize)> {
+        let deadline = tokio::time::Instant::now() + self.log.timing.evidence;
+        let requests: Vec<(usize, usize, Value)> = paths
+            .iter()
+            .enumerate()
+            .flat_map(|(scope, path)| {
+                self.pack_bodies(req, path)
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(pack, body)| (scope, pack, body))
+            })
+            .collect();
+        let pack_count = requests
+            .iter()
+            .map(|(_, pack, _)| pack + 1)
+            .max()
+            .unwrap_or(0);
+        let mut building = stream::iter(requests)
+            .map(|(scope, pack, body)| async move { (scope, pack, self.log.recall(&body).await) })
+            .buffer_unordered(PACKS_AT_ONCE);
+        let mut arrived = vec![Vec::new(); paths.len()];
+        while let Ok(next) = tokio::time::timeout_at(deadline, building.next()).await {
+            let Some((scope, pack, result)) = next else {
+                break;
+            };
+            arrived[scope].push((pack, result?));
+        }
+        let late: Vec<&str> = paths
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| arrived[*index].len() < pack_count)
+            .map(|(_, path)| path.as_str())
+            .collect();
+        if !paths.is_empty() && arrived.iter().all(Vec::is_empty) {
+            return Err(Error::Unavailable(format!(
+                "no recall pack arrived within {:?}",
+                self.log.timing.evidence
+            )));
+        }
+        if !late.is_empty() {
+            log::warn!(
+                "[cortex] evidence recall left out {} of {} scopes still building after {:?}: {}",
+                late.len(),
+                paths.len(),
+                self.log.timing.evidence,
+                late.join(", ")
+            );
+        }
+        for packs in &mut arrived {
+            packs.sort_by_key(|(index, _)| *index);
+        }
+        Ok((arrived, late.len()))
+    }
+
     /// See the module docs. `paths` are the kind scopes to read, most
     /// specific node first.
     pub(super) async fn recall_evidence(
@@ -263,22 +335,42 @@ impl CortexEngine {
         req: &RecallRequest,
         paths: &[String],
     ) -> Result<RecallAnswer> {
-        let packs: Vec<Value> = stream::iter(paths.to_vec())
-            .map(|path| async move { self.pack(req, &path).await })
-            .buffered(PACKS_AT_ONCE)
-            .try_collect()
-            .await?;
+        let (packs, late) = self.packs_by_deadline(req, paths).await?;
         let mut facts = Vec::new();
         let mut beliefs = Vec::new();
         let mut per_pack = Vec::new();
-        for pack in &packs {
-            let gathered = gather(pack, &req.filter, req.exclude_thread.as_ref());
-            facts.extend(gathered.facts);
-            beliefs.extend(gathered.beliefs);
-            per_pack.push(gathered.events);
+        for scope_packs in &packs {
+            for (index, pack) in scope_packs {
+                let mut gathered = gather(pack, &req.filter, req.exclude_thread.as_ref());
+                // The broad pack is the canonical source for derived layers;
+                // the channel pack supplements events only.
+                if *index > 0 {
+                    gathered.facts.clear();
+                    gathered.beliefs.clear();
+                }
+                facts.extend(gathered.facts);
+                beliefs.extend(gathered.beliefs);
+                per_pack.push(gathered.events);
+            }
         }
         let events = interleave(per_pack);
-        let answer = render(&facts, &beliefs, &events);
+        let mut answer = render(&facts, &beliefs, &events);
+        if late > 0 {
+            if answer.is_empty() {
+                return Err(Error::Unavailable(format!(
+                    "{late} of {} memory areas were still being searched after {:?} and the \
+                     rest hold nothing relevant; memory was not fully searched",
+                    paths.len(),
+                    self.log.timing.evidence
+                )));
+            }
+            answer.push_str(&format!(
+                "\n\n(Memory was only partly searched: {late} of {} areas did not answer \
+                 within {:?}, so this evidence may be incomplete.)",
+                paths.len(),
+                self.log.timing.evidence
+            ));
+        }
         let citations = events
             .into_iter()
             .take(req.limit)

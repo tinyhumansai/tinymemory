@@ -12,9 +12,9 @@ fn documents_office_feature_exposes_the_office_converter() {
     for format in [
         DocumentFormat::Pdf,
         DocumentFormat::Docx,
-        DocumentFormat::Xlsx,
         DocumentFormat::Pptx,
     ] {
         assert!(chain.supports(format), "{format}");
     }
+    assert!(!chain.supports(DocumentFormat::Xlsx));
 }

@@ -6,6 +6,10 @@
 //!   through [`MemoryTools::call`]. The namespace a model writes to and the
 //!   reach it reads with are fixed by the host in a [`ToolScope`]; no tool
 //!   argument can name either.
+//! - tools::single offers a configurable one-name facade for recall, fetch,
+//!   learn and forget, plus the host-facing pending-write adapter.
+//! - tools::budget provides per-run call and latency limits using a
+//!   host-supplied clock.
 //! - [`context`] compiles `context.md`, a token-budgeted brief a host injects
 //!   at the start of a session.
 //! - [`recall`] is the one read every lifecycle step is built from: a
@@ -68,27 +72,46 @@
 pub mod backfill;
 pub mod background;
 pub mod brain;
+pub mod confine;
 pub mod context;
 pub mod deletion;
 pub mod layout;
 pub mod layout_migration;
 pub mod lifecycle;
 pub mod list_store;
+pub mod ops;
 pub mod pending;
 pub mod prefetch;
 pub mod queue;
 pub mod recall;
+pub mod run_slots;
 pub mod tools;
 
 pub use background::{BackgroundJob, BackgroundRunner, JobOutcome, JobReport};
-pub use brain::{Brain, BrainBatch, BrainDocument, Ingested};
+pub use brain::{Brain, BrainBatch, BrainDocument, BrainSourceCount, BrainSourcesView, Ingested};
+pub use confine::{Confinement, Policy};
+pub use layout::identity::{
+    AgentPin, Identity, IdentityPins, ResolvedIdentity, account_root, actor_of_root, chat_node,
+    org_of_recorded, validate_root,
+};
 pub use layout::{BrainSource, CoreScope, DEFAULT_CORE_LIMIT, MemoryLayout};
+pub use lifecycle::date_hint::DateHintModel;
+pub use lifecycle::turn::{
+    CitationSink, Clock, CompactionOptions, EngineResolver, JobsSink, LoggedToolCall,
+    PreTurnOptions, TurnHooks, TurnPack, logged_reply, user_turn_index,
+};
+pub use lifecycle::window::InPromptFrom;
 pub use lifecycle::{
-    AgentMemory, Compaction, PostTurn, PostTurnReport, PreTurn, RecallPolicy, SessionStart,
-    TurnContext,
+    AgentCount, AgentMemory, Compaction, PostTurn, PostTurnReport, PreTurn, Preview, PreviewMode,
+    RecallPolicy, RecallSettings, SessionStart, TurnContext,
 };
 pub use recall::{
     ContextPack, HolisticRecall, ScopeSection, SectionQuery, holistic_recall, holistic_recall_dated,
+};
+pub use tools::budget::{Clock as BudgetClock, DenialReason, Refusal, RunBudget};
+pub use tools::single::{
+    CallContext, ConcurrencyClass, PendingWriteSink, PermissionClass, RecallDetails, SingleTool,
+    SingleToolOutcome, SingleToolSpec, WriteSink, concurrency_for, is_write_action, permission_for,
 };
 pub use tools::{
     MEMORY_EXPLORE, MEMORY_FETCH, MEMORY_FORGET, MEMORY_GET, MEMORY_LIST, MEMORY_RECALL,

@@ -10,6 +10,10 @@
 //! ([`Backoff`]): a tick skips it until it is due again, while a forced
 //! drain (a sign-in) runs everything now.
 //!
+//! An unreadable store is never overwritten. A deletion that cannot be saved
+//! is held in memory, counted by [`DeletionQueue::pending`], and written into
+//! the store once it can be read again.
+//!
 //! The crate links no executor and does no I/O: the host supplies the store
 //! and the [`DeletionExecutor`] that does the forget.
 
@@ -84,7 +88,7 @@ impl Backoff {
 pub trait DeletionExecutor: Send + Sync {
     /// Whether the engine can be reached at all. When not, a drain stops
     /// before running anything.
-    fn is_reachable(&self) -> bool;
+    async fn is_reachable(&self) -> bool;
 
     /// Runs `deletion`, returning how many items went.
     ///
@@ -112,8 +116,13 @@ struct Retry {
 pub struct DeletionQueue<S: ListStore<PendingDeletion>> {
     store: S,
     backoff: Backoff,
-    /// Serialises read-modify-writes of the store.
-    lock: Mutex<()>,
+    /// Serialises read-modify-writes of the store, and holds the deletions
+    /// not yet saved to it.
+    ///
+    /// ponytail: held deletions are lost if the process exits while the store
+    /// stays unreadable; a host that sets a corrupt file aside recovers them on
+    /// the next save.
+    held: Mutex<Vec<PendingDeletion>>,
     /// Serialises drains, so two triggers never run one deletion twice.
     draining: AsyncMutex<()>,
     retries: Mutex<HashMap<PendingDeletion, Retry>>,
@@ -134,36 +143,61 @@ impl<S: ListStore<PendingDeletion>> DeletionQueue<S> {
         Self {
             store,
             backoff,
-            lock: Mutex::new(()),
+            held: Mutex::new(Vec::new()),
             draining: AsyncMutex::new(()),
             retries: Mutex::new(HashMap::new()),
         }
     }
 
-    fn locked(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.lock
+    fn held(&self) -> std::sync::MutexGuard<'_, Vec<PendingDeletion>> {
+        self.held
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn read(&self) -> Vec<PendingDeletion> {
-        self.store.load().unwrap_or_else(|error| {
-            log::warn!("[tinymemory:deletion] pending deletions unreadable: {error}");
-            Vec::new()
-        })
+    /// The stored deletions with every `held` one written back into the
+    /// store, or `None` while the store cannot be read.
+    fn read(&self, held: &mut Vec<PendingDeletion>) -> Option<Vec<PendingDeletion>> {
+        let mut all = match self.store.load() {
+            Ok(all) => all,
+            Err(error) => {
+                log::warn!("[tinymemory:deletion] pending deletions unreadable: {error}");
+                return None;
+            }
+        };
+        if !held.is_empty() {
+            merge(&mut all, held.drain(..));
+            self.write(&all, held);
+        }
+        Some(all)
     }
 
-    fn write(&self, all: &[PendingDeletion]) {
-        if let Err(error) = self.store.save(all) {
-            log::warn!("[tinymemory:deletion] writing pending deletions failed: {error}");
+    /// Saves `all`; when that fails, holds it until the next read succeeds.
+    ///
+    /// Every list written holds every `held` deletion except one being
+    /// settled, so a successful save leaves nothing to hold.
+    fn write(&self, all: &[PendingDeletion], held: &mut Vec<PendingDeletion>) {
+        match self.store.save(all) {
+            Ok(()) => held.clear(),
+            Err(error) => {
+                log::warn!("[tinymemory:deletion] writing pending deletions failed: {error}");
+                merge(held, all.iter().cloned());
+            }
         }
     }
 
     /// Records `deletion` to run on the next drain. One already queued is not
     /// queued twice.
     pub fn enqueue(&self, deletion: PendingDeletion) {
-        let _guard = self.locked();
-        let mut all = self.read();
+        let mut held = self.held();
+        let Some(mut all) = self.read(&mut held) else {
+            log::warn!(
+                "[tinymemory:deletion] {} deletion held until pending deletions are readable",
+                deletion.label()
+            );
+            merge(&mut held, std::iter::once(deletion));
+            return;
+        };
         if all.contains(&deletion) {
             return;
         }
@@ -172,23 +206,29 @@ impl<S: ListStore<PendingDeletion>> DeletionQueue<S> {
             deletion.label()
         );
         all.push(deletion);
-        self.write(&all);
+        self.write(&all, &mut held);
     }
 
-    /// Every deletion still owed, oldest first.
+    /// Every deletion still owed, oldest first, including those held while
+    /// the store is unreadable.
     #[must_use]
     pub fn pending(&self) -> Vec<PendingDeletion> {
-        let _guard = self.locked();
-        self.read()
+        let mut held = self.held();
+        let mut all = self.read(&mut held).unwrap_or_default();
+        merge(&mut all, held.iter().cloned());
+        all
     }
 
     fn settle(&self, deletion: &PendingDeletion) {
-        let _guard = self.locked();
-        let mut all = self.read();
+        let mut held = self.held();
+        held.retain(|queued| queued != deletion);
+        let Some(mut all) = self.read(&mut held) else {
+            return;
+        };
         let before = all.len();
         all.retain(|queued| queued != deletion);
         if all.len() != before {
-            self.write(&all);
+            self.write(&all, &mut held);
         }
     }
 
@@ -212,7 +252,7 @@ impl<S: ListStore<PendingDeletion>> DeletionQueue<S> {
         if queued.is_empty() {
             return 0;
         }
-        if !executor.is_reachable() {
+        if !executor.is_reachable().await {
             log::debug!(
                 "[tinymemory:deletion] memory off; {} pending deletions wait",
                 queued.len()
@@ -258,6 +298,15 @@ impl<S: ListStore<PendingDeletion>> DeletionQueue<S> {
             }
         }
         settled
+    }
+}
+
+/// Appends each of `extra` not already in `all`.
+fn merge(all: &mut Vec<PendingDeletion>, extra: impl IntoIterator<Item = PendingDeletion>) {
+    for deletion in extra {
+        if !all.contains(&deletion) {
+            all.push(deletion);
+        }
     }
 }
 

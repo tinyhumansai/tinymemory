@@ -68,7 +68,7 @@ impl MemoryConfig {
 }
 
 /// How one engine is reached.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EngineSettings {
     /// The engine's base URL; `None` uses the engine's default endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
