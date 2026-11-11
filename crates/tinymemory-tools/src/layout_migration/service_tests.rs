@@ -208,7 +208,7 @@ impl LayoutHost for CountingHost {
         &self.store
     }
 
-    fn engines(&self) -> crate::layout_migration::Result<Engines> {
+    async fn engines(&self) -> crate::layout_migration::Result<Engines> {
         if self.fail_engines {
             Err(crate::layout_migration::Error::Off(
                 "engine unavailable".to_string(),
@@ -219,7 +219,7 @@ impl LayoutHost for CountingHost {
                 tree: self.inner.tree.clone(),
             })
         } else {
-            self.inner.engines()
+            self.inner.engines().await
         }
     }
 
@@ -239,8 +239,8 @@ impl LayoutHost for CountingHost {
         self.inner.free_now().await
     }
 
-    fn legacy_claim(&self) -> crate::layout_migration::Result<Option<Box<dyn LegacyClaim>>> {
-        self.inner.legacy_claim()
+    async fn legacy_claim(&self) -> crate::layout_migration::Result<Option<Box<dyn LegacyClaim>>> {
+        self.inner.legacy_claim().await
     }
 
     fn listed_unconfirmed(&self) -> bool {

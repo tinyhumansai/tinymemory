@@ -94,7 +94,7 @@ pub trait LayoutHost: Send + Sync {
     /// # Errors
     ///
     /// When memory is off or the account has no per-user root.
-    fn engines(&self) -> Result<Engines>;
+    async fn engines(&self) -> Result<Engines>;
 
     /// Where items go in the per-user tree.
     ///
@@ -128,7 +128,7 @@ pub trait LayoutHost: Send + Sync {
     /// # Errors
     ///
     /// When memory is off or the account has no per-user root.
-    fn legacy_claim(&self) -> Result<Option<Box<dyn LegacyClaim>>>;
+    async fn legacy_claim(&self) -> Result<Option<Box<dyn LegacyClaim>>>;
 
     /// Whether the last import of old local memory ended with its last batch
     /// not confirmed listed. The migration then forgets by id, never erasing
@@ -167,7 +167,7 @@ where
     if state.phase == Phase::Cleaned && (state.rechecked || !host.listed_unconfirmed()) {
         return Ok(Outcome::Done);
     }
-    let engines = host.engines()?;
+    let engines = host.engines().await?;
     if state.phase == Phase::Idle && !state.switched && !legacy_present(&*engines.legacy).await? {
         return nothing_to_move(host, &mut state).await;
     }
@@ -175,7 +175,7 @@ where
         state.takeover = true;
         store.save(&state)?;
     }
-    let shared = host.legacy_claim()?;
+    let shared = host.legacy_claim().await?;
     if let Some(claim) = &shared {
         if claim.held_by_other()? {
             return claimed_elsewhere(host, &mut state).await;
