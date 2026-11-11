@@ -9,7 +9,9 @@
 //! * detection is deterministic + offline (no external egress on classify),
 //! * category identifiers serialize to stable snake_case strings.
 
-use super::rules::{has_international_phone_digit_count, is_iban, is_ipv4, is_luhn_valid};
+use super::rules::{
+    has_international_phone_digit_count, is_complete_card, is_iban, is_ipv4, is_luhn_valid,
+};
 use super::*;
 
 // ---------------------------------------------------------------------------
@@ -45,6 +47,43 @@ fn detects_valid_credit_card() {
         assert!(r.has_category(PiiCategory::CreditCard), "missed in {raw:?}");
         assert_eq!(r.level, RiskLevel::High);
     }
+}
+
+#[test]
+fn detects_card_with_adjacent_cvv_group() {
+    // A CVV is often written right after the card, with the same separator.
+    // The run is PAN + CVV; the PAN still has to pass Luhn on its own.
+    for raw in [
+        "4111 1111 1111 1111 123",
+        "4111-1111-1111-1111-123",
+        "card 4111 1111 1111 1111 1234 exp 12/26",
+    ] {
+        let r = scan(raw);
+        assert!(r.has_category(PiiCategory::CreditCard), "missed in {raw:?}");
+        assert_eq!(r.level, RiskLevel::High, "{raw:?}");
+        assert_eq!(
+            r.hits,
+            vec![CategoryHit {
+                category: PiiCategory::CreditCard,
+                count: 1
+            }],
+            "{raw:?}"
+        );
+    }
+}
+
+#[test]
+fn detects_card_with_labelled_cvv() {
+    // A label between the card and its CVV ends the run at the card, so the
+    // PAN is judged on its own and counted once.
+    let r = scan("card 4111 1111 1111 1111 cvv 123");
+    assert_eq!(
+        r.hits,
+        vec![CategoryHit {
+            category: PiiCategory::CreditCard,
+            count: 1
+        }]
+    );
 }
 
 #[test]
@@ -298,6 +337,25 @@ fn luhn_invalid_number_is_not_a_card() {
 }
 
 #[test]
+fn a_run_that_starts_with_a_card_is_a_card() {
+    // A Luhn-valid PAN followed by more digits is still a card: the run is
+    // flagged whole rather than passed over because it is longer than one.
+    for raw in [
+        "4111 1111 1111 1111 003-1",
+        "4111 1111 1111 1111 1111 1111",
+        "4111 1111 1111 1111 12",
+    ] {
+        let r = scan(raw);
+        assert!(r.has_category(PiiCategory::CreditCard), "missed in {raw:?}");
+        assert_eq!(r.level, RiskLevel::High, "{raw:?}");
+    }
+    // With no separator there is no head to try: an overlong run of digits is
+    // judged whole and is not a card.
+    let r = scan("41111111111111110031");
+    assert!(!r.has_category(PiiCategory::CreditCard), "{r:?}");
+}
+
+#[test]
 fn out_of_range_octets_are_not_ipv4() {
     let r = scan("coords 300.400.500.600 are nonsense");
     assert!(
@@ -484,6 +542,62 @@ fn luhn_validator_accepts_known_good_and_rejects_bad() {
 }
 
 #[test]
+fn complete_card_validator_accepts_pan_or_pan_with_cvv_group() {
+    // A complete PAN, grouped or not.
+    assert!(is_complete_card("4111111111111111"));
+    assert!(is_complete_card("4111 1111 1111 1111"));
+    // A complete PAN followed by one adjacent group of 3–4 digits.
+    assert!(is_complete_card("4111 1111 1111 1111 123"));
+    assert!(is_complete_card("4111-1111-1111-1111-1234"));
+    // The whole run is Luhn-valid at 19 digits: a complete PAN as written.
+    assert!(is_complete_card("4111 1111 1111 1111 003"));
+    // Luhn-invalid PAN with a CVV-shaped tail.
+    assert!(!is_complete_card("1234 5678 9012 3456 123"));
+    // A complete PAN followed by more digits: the run starts with a card.
+    assert!(is_complete_card("4111 1111 1111 1111 12"));
+    assert!(is_complete_card("4111 1111 1111 1111 12345"));
+    assert!(is_complete_card("4111 1111 1111 1111 003-1"));
+    // No separator, so no head to try, and 20 digits is not a PAN.
+    assert!(!is_complete_card("41111111111111110031"));
+    // A valid PAN after another number on the same run is still found.
+    assert!(is_complete_card("1234567890123456 4111 1111 1111 1111"));
+    assert!(is_complete_card("1234 5678 9012 3456 4111 1111 1111 1111"));
+    // A group of non-ASCII digits is skipped without panicking.
+    assert!(is_complete_card(
+        "\u{661}\u{662}\u{663}\u{664} 4111 1111 1111 1111"
+    ));
+}
+
+#[test]
+fn a_card_after_another_number_on_the_same_run_is_found_and_redacted() {
+    for (text, redacted) in [
+        (
+            "invoice 1234567890123456 4111 1111 1111 1111",
+            "invoice [redacted]",
+        ),
+        (
+            "ids 1234 5678 9012 3456 4111 1111 1111 1111 end",
+            "ids [redacted] end",
+        ),
+    ] {
+        let r = scan(text);
+        assert!(
+            r.has_category(PiiCategory::CreditCard),
+            "missed in {text:?}"
+        );
+        assert_eq!(redact_identifiers(text), redacted, "{text:?}");
+    }
+}
+
+#[test]
+fn a_long_separated_digit_run_is_judged_in_linear_work() {
+    // Every group start is tried, but each stops past 19 digits, so a long run
+    // of single-digit groups is cheap and is not a card.
+    let run = "1 ".repeat(20_000);
+    assert!(!is_complete_card(run.trim_end()));
+}
+
+#[test]
 fn international_phone_validator_bounds_digit_count() {
     assert!(has_international_phone_digit_count("+1234567"));
     assert!(has_international_phone_digit_count("+1 234 567 890 123 45"));
@@ -524,6 +638,33 @@ fn redact_identifiers_replaces_structured_values_only() {
     assert!(out.contains("[redacted]"), "{out}");
     // Topical keywords are context, not identifiers: kept.
     assert!(out.contains("patient"), "{out}");
+}
+
+#[test]
+fn redact_identifiers_replaces_the_whole_card_span() {
+    // An adjacent CVV group belongs to the card: the span is replaced whole.
+    assert_eq!(
+        redact_identifiers("pay with 4111 1111 1111 1111 123 today"),
+        "pay with [redacted] today"
+    );
+    // A labelled CVV ends the run at the card; only the card is structured.
+    assert_eq!(
+        redact_identifiers("card 4111 1111 1111 1111 cvv 123"),
+        "card [redacted] cvv 123"
+    );
+}
+
+#[test]
+fn redact_identifiers_replaces_a_run_that_starts_with_a_card_whole() {
+    // The valid PAN at the head is not left in place: the whole run goes.
+    for text in [
+        "ref 4111 1111 1111 1111 003-1 noted",
+        "ref 4111 1111 1111 1111 1111 1111 noted",
+    ] {
+        assert_eq!(redact_identifiers(text), "ref [redacted] noted", "{text:?}");
+    }
+    let text = "ref 41111111111111110031 noted";
+    assert_eq!(redact_identifiers(text), text);
 }
 
 #[test]

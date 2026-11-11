@@ -3,9 +3,9 @@
 //! Two flavours of rule, both compiled once into a process-wide static:
 //!
 //! * **Pattern rules** — a [`Regex`] plus an optional structural `validator`
-//!   (Luhn for cards, mod-97 for IBANs, octet range for IPv4, digit count for
-//!   international phone numbers) that rejects shape-matches that aren't
-//!   actually valid identifiers.
+//!   (Luhn and complete-card grouping for cards, mod-97 for IBANs, octet range
+//!   for IPv4, digit count for international phone numbers) that rejects
+//!   shape-matches that aren't actually valid identifiers.
 //! * **Keyword rules** — an alternation of domain terms wrapped in word
 //!   boundaries, used for the topical categories (medical / legal / financial /
 //!   family) where there is no single canonical value shape.
@@ -85,6 +85,41 @@ pub(crate) fn is_luhn_valid(raw: &str) -> bool {
         sum += v;
     }
     sum.is_multiple_of(10)
+}
+
+/// Accept a run of digits and single separators as a payment card when any
+/// span of whole digit groups in it is a Luhn-valid PAN of 13–19 digits: the
+/// whole run, a PAN with its CVV group written beside it, a PAN that runs on
+/// into more digits, or a PAN that follows another number on the same run. The
+/// whole run counts as the card, so redaction takes all of it, and no valid
+/// PAN is left in place because something else is written next to it. A run
+/// with no separator has no inner span and is judged whole.
+pub(crate) fn is_complete_card(raw: &str) -> bool {
+    std::iter::once(0)
+        .chain(raw.match_indices([' ', '-']).map(|(i, _)| i + 1))
+        .any(|start| starts_with_card(&raw[start..]))
+}
+
+/// Whether some whole-group prefix of `run` is a Luhn-valid PAN. It stops
+/// once the prefix passes 19 digits, so a long run costs linear work, and it
+/// cuts only at an ASCII separator, never inside a multi-byte character.
+fn starts_with_card(run: &str) -> bool {
+    let mut digits = 0;
+    for (i, b) in run.bytes().enumerate() {
+        if b.is_ascii_digit() {
+            digits += 1;
+            if digits > 19 {
+                return false;
+            }
+        } else if matches!(b, b' ' | b'-') {
+            if (13..=19).contains(&digits) && is_luhn_valid(&run[..i]) {
+                return true;
+            }
+        } else {
+            return false;
+        }
+    }
+    (13..=19).contains(&digits) && is_luhn_valid(run)
 }
 
 /// Digit-count bounds for an international phone number: 7–15 digits once
@@ -177,12 +212,17 @@ fn build_rules() -> Vec<Rule> {
             r"\b[A-Za-z]{2}\d{2}(?:[A-Za-z0-9]{11,30}|(?:[ -][A-Za-z0-9]{4}){2,7}(?:[ -][A-Za-z0-9]{1,3})?)\b",
             Some(is_iban),
         ),
-        // Payment card: 13–19 digits with optional single separators, then
-        // Luhn-validated so version strings / IDs don't false-positive.
+        // Payment card: a run of 13 or more digits with at most one space or
+        // hyphen between any two of them. The pattern has no upper bound on
+        // purpose: it consumes the whole run so the validator can judge it as
+        // a unit — it is a card when any span of whole digit groups in it is a
+        // 13–19 digit PAN that passes Luhn (a PAN and its CVV group, a PAN
+        // followed by more digits, or one after another number). Redaction
+        // replaces the whole span, so no valid PAN is left behind in a run.
         pattern_rule(
             PiiCategory::CreditCard,
-            r"\b\d(?:[ -]?\d){12,18}\b",
-            Some(is_luhn_valid),
+            r"\b\d(?:[ -]?\d){12,}\b",
+            Some(is_complete_card),
         ),
         // US-style phone number (3-3-4 groups, requires a separator so it
         // doesn't swallow arbitrary 10-digit numbers). A leading `+1` is part
