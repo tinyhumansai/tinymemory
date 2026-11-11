@@ -56,7 +56,7 @@ alone, so the contract is the only coupling point.
 | `tinymemory-tools` | (none) | Every module (`tools`, `context`, `recall`, `layout`, `brain`, `lifecycle`, `background`) is always built. |
 | `tinymemory-integrations` | `cortex` (default) | `cortex::CortexEngine` (both wires), `registry` (`list_engines`, `build_engine`), `config` (`MemoryConfig`) |
 | | `documents` | Format sniffing and conversion to markdown |
-| | `documents-office` | PDF, DOCX and PPTX conversion; XLSX temporarily unsupported (implies `documents`) |
+| | `documents-office` | PDF, DOCX, PPTX, XLSX conversion (implies `documents`) |
 | | `sources` | Readers for folders, files, conversations (implies `documents`) |
 | | `sources-network` | GitHub, RSS and web-page readers behind the SSRF guard (implies `sources`) |
 | | `safety` | Secret and PII scrubbing of a `StoreItem` |

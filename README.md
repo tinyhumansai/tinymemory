@@ -62,7 +62,7 @@ else on request, so a host pays only for what it uses.
 | --- | --- | --- |
 | `cortex` (default) | `cortex`, `registry`, `config`, `registry::binder` | `CortexEngine` over both wires; `list_engines`, `build_engine`, `EngineCredential`, cached guarded `EngineBinder`, `MemoryConfig` (implies `safety`) |
 | `documents` | `documents` | Format sniffing and conversion to markdown, producing `StoreItem::Document` |
-| `documents-office` | `documents::OfficeConverter` | PDF, DOCX and PPTX to markdown; XLSX is temporarily unsupported (implies `documents`) |
+| `documents-office` | `documents::OfficeConverter` | PDF, DOCX, PPTX and XLSX to markdown (implies `documents`) |
 | `brain` | `brain` | Files into `tinymemory_tools::BrainDocument`s, by the source type their format implies (implies `documents`) |
 | `sources` | `sources` | Folder, file and conversation readers (implies `documents`) |
 | `sources-network` | `sources::fetch` and the network readers | GitHub, RSS and web-page readers and `fetch_url`, behind the SSRF guard (implies `sources`) |

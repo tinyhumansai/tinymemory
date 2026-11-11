@@ -54,10 +54,15 @@ futures = { version = "0.3", optional = true }
 sha2 = { version = "0.11", optional = true }
 
 # --- documents-office ---
-# Text out of PDFs, Word documents and PowerPoint decks. These readers are
-# pure Rust with no system libraries. Spreadsheet import is temporarily
-# disabled until a safe Calamine release is published.
+# Text out of the formats people actually drop into memory — a contract PDF, a
+# spec `.docx`, a pricing `.xlsx`, a deck. All pure Rust with no system
+# libraries. `pdf-extract` reads a PDF's text layer. `zip` + `quick-xml` are
+# the whole of `.docx` and `.pptx`, which are zip archives of XML. `.xlsx` is
+# not — shared-string tables and cell typing make hand-parsing it a liability —
+# so `calamine` reads that one. `zip` and `quick-xml` are the versions
+# `calamine` already links, so the graph carries one copy of each.
 pdf-extract = { version = "0.12", optional = true }
+calamine = { version = "0.38", optional = true }
 quick-xml = { version = "0.42", optional = true }
 zip = { version = "9", default-features = false, features = ["deflate"], optional = true }
 
@@ -116,10 +121,10 @@ cortex = ["dep:async-trait", "dep:serde", "dep:serde_json", "dep:reqwest", "dep:
 # `documents`: format sniffing and conversion to markdown, emitting
 # `StoreItem::Document`. Does no I/O.
 documents = ["dep:async-trait", "dep:serde", "dep:serde_json", "dep:thiserror"]
-# `documents::OfficeConverter`: PDF, DOCX and PPTX to markdown, for a
+# `documents::OfficeConverter`: PDF, DOCX, PPTX and XLSX to markdown, for a
 # host to prepend to its `ConverterChain`. Off by default because a PDF parser
-# is real weight. XLSX is recognized but temporarily unsupported.
-documents-office = ["documents", "dep:pdf-extract", "dep:quick-xml", "dep:zip"]
+# and a spreadsheet reader are real weight.
+documents-office = ["documents", "dep:pdf-extract", "dep:calamine", "dep:quick-xml", "dep:zip"]
 # `brain`: converting raw files into `tinymemory_tools::BrainDocument`s
 # placed under the source type their format implies.
 brain = ["documents", "dep:tinymemory-tools"]

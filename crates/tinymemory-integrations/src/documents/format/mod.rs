@@ -35,9 +35,8 @@ pub enum DocumentFormat {
     Pdf,
     /// Office Open XML word processing (`.docx`). Needs a real extractor.
     Docx,
-    /// Office Open XML spreadsheet (`.xlsx`, macro-enabled `.xlsm`). The
-    /// format remains recognizable, though TinyMemory's built-in reader is
-    /// temporarily disabled; a host may bind its own converter.
+    /// Office Open XML spreadsheet (`.xlsx`, macro-enabled `.xlsm`). Needs a
+    /// real extractor.
     Xlsx,
     /// Office Open XML presentation (`.pptx`). Needs a real extractor.
     Pptx,
