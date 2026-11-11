@@ -26,6 +26,14 @@ fn payment_checksums_reject_bad_bounds_and_checksums() {
 }
 
 #[test]
+fn iban_rejects_non_ascii_digits_without_panicking() {
+    // `IBAN_RE`'s `\d` is Unicode, so a Devanagari digit can reach the
+    // validator; the check digits used to be sliced by byte and split it.
+    assert!(!valid_iban("DE\u{096A}\u{096A}1234567890123456"));
+    assert!(!valid_iban("DE89\u{096A}70400440532013000"));
+}
+
+#[test]
 fn identity_validators_cover_checksums_reserved_values_and_prefixes() {
     assert!(valid_verhoeff(&digits("234567890124")));
     assert!(!valid_verhoeff(&digits("134567890124")));

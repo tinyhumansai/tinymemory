@@ -259,6 +259,15 @@ fn iban_de_redacted() {
 fn iban_invalid_kept() {
     unchanged("noise DE89370400440532013001 noise");
 }
+#[test]
+fn iban_with_non_ascii_digits_does_not_panic() {
+    // Devanagari check digits match `IBAN_RE`'s Unicode `\d` but are not
+    // folded by normalization; both the content and boundary paths used to
+    // panic on them instead of leaving the text alone.
+    let text = "IBAN DE\u{096A}\u{096A}1234567890123456 end";
+    unchanged(text);
+    assert!(!has_likely_pii(text));
+}
 
 // --- Aadhaar ---
 #[test]
