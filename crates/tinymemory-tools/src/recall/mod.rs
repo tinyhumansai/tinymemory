@@ -78,7 +78,7 @@ pub(crate) use render::Frontmatter;
 pub use render::estimate_tokens;
 pub use types::{
     ContextPack, DEFAULT_PACK_BUDGET_TOKENS, DEFAULT_PACK_TITLE, HolisticRecall, ScopeSection,
-    SectionHits, SectionQuery, SkippedSection, ThreadWindow,
+    SectionHits, SectionQuery, SkipReason, SkippedSection, ThreadWindow,
 };
 
 /// Reads every section of `request` from `engine`, concurrently, and renders

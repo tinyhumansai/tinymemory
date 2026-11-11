@@ -246,6 +246,10 @@ impl DocumentConverter for ConverterChain {
         let format = document.format();
         match self.converters.iter().find(|c| c.supports(format)) {
             Some(converter) => converter.convert(document).await,
+            None if format == DocumentFormat::Xlsx => Err(Error::UnsupportedFormat(
+                "spreadsheet import is temporarily disabled until a safe reader release is available"
+                    .to_string(),
+            )),
             None => Err(Error::UnsupportedFormat(format!(
                 "no converter handles {format}; this build converts {}",
                 describe(&self.supported_formats())

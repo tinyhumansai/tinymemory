@@ -13,14 +13,55 @@ The agent-facing side of TinyMemory, over any `tinymemory_api::MemoryEngine`:
   memory lifecycle. `MemoryLayout` is the standard tree: brain documents by
   source, per-agent conversations, and learnings. `Brain` ingests documents.
   `AgentMemory` serves session start, pre-turn context, post-turn logging and
-  compaction. `BackgroundJob` carries the belief builds those calls hand back.
+  compaction. `TurnHooks` composes those calls with host-supplied clock,
+  engine, model, jobs, and citation ports. It starts no tasks; its owned
+  pre-turn future can run in the existing bounded `Prefetcher`. `InPromptFrom`
+  tracks the live prompt window, and `date_hint` parses optional model date
+  ranges. `BackgroundJob` carries the belief builds those calls hand back.
   See [`docs/architecture/lifecycle.md`](../../docs/architecture/lifecycle.md)
   and the runnable `examples/agent_loop.rs` and `examples/brain.rs`.
+- **`prefetch`**: bounded runtime-neutral background refreshes. Hosts can use
+  `TurnCache<K>` for completed lifecycle packs and `TurnCacheRegistry<K>` to
+  invalidate them across host-owned contexts. See the
+  [prefetch module guide](src/prefetch/README.md).
+- **`pending`**: a runtime-neutral durable FIFO for tool writes, plus weakly
+  cached owner barriers and per-partition drain locks. The host supplies each
+  partition's `ListStore`, maps its own owner and storage keys, and runs the
+  engine executor. New owner epochs use a UUID so a recreated gate cannot
+  mistake an older persisted fence epoch for its own.
+- **`ops`**: validated host request builders, explorer paths, common read
+  limits, learning metadata shaping and deletion helpers. `MemoryOps` applies
+  a concrete `Confinement` policy before a request reaches an engine.
+- **`backfill`**: builds and runs a resumable conversation backfill over a
+  host `ThreadSource` and `CounterStore`. Consent, the thread-store adapter,
+  and task scheduling remain with the host.
+- **`layout_migration`**: migrates a legacy tree through a host `LayoutHost`.
+  `MigrationService` owns run-slot and tick policy while a host
+  `MigrationSpawner` supplies the executor; import and migration starts share
+  a synchronous `StartGate`.
+- **`run_slots`**: keyed RAII reservations shared across service instances.
+  Dropping a run task releases its slot after cancellation or spawn rejection.
 
 The crate has no tool-runtime dependency (no MCP, no `tinytools`). A host
 adapts `ToolSpec` to whatever runtime it uses; see
 [Adapting to a tool runtime](#adapting-to-a-tool-runtime). The design is
 written up in [`docs/architecture/tools.md`](../../docs/architecture/tools.md).
+
+The `fs-claim` Cargo feature opts into `layout_migration::FsLegacyClaim`, a
+filesystem marker implementation of `LegacyClaim` for shared local trees. It
+adds only the optional `url` and `tempfile` dependencies; the default build
+keeps the claim implementation behind the host port.
+
+The `schema` Cargo feature enables JSON Schema derives for host-facing types
+such as `lifecycle::RecallSettings`. It adds optional `schemars` support; the
+default build remains schema-free.
+
+`lifecycle::RecallSettings` carries defaulted host recall and lifecycle timing
+settings. It converts to `RecallPolicy` without applying the host's separate
+identity-level `enabled` flag; `RecallSettings::validate` checks the settings
+before a host applies them. `AgentMemory::preview` returns a typed turn/session
+mode and pack without logging, while `AgentMemory::agents` lists conversation
+counts within its layout root.
 
 ## The tools
 
@@ -36,7 +77,8 @@ written up in [`docs/architecture/tools.md`](../../docs/architecture/tools.md).
 
 Details:
 
-- `limit` is `1..=50`, default `10`. `ids` lists `1..=200` ids.
+- `limit` is `1..=100`, default `10`, across recall, fetch and list. Explore
+  defaults to `50` buckets and accepts `1..=500`. `ids` lists `1..=200` ids.
 - `memory_fetch`'s `mode` enum lists exactly the engine's
   `EngineDescriptor::fetch_modes`; with no mode named, `hybrid` is used when
   served, otherwise the engine's first mode. An engine serving no mode gets no
@@ -72,6 +114,41 @@ A change to them changes what every host's model is told, so the
 BLESS_TOOL_CONTRACTS=1 cargo test -p tinymemory-tools --test tool_contracts
 ```
 
+## Single-name facade and run budget
+
+SingleTool gives a host one registered name with an action field for recall,
+fetch, learn or forget. Its action policy classifies recall and fetch as
+read-only and concurrency-safe, and learn and forget as writes that require
+exclusive scheduling. Unknown actions are treated as writes.
+
+Reads reuse the seven-tool argument and request shaping. The single facade
+returns recall evidence capped near 2,500 tokens at line boundaries, excludes
+the live prompt window of the current thread, and pages fetch results five at
+a time with the engine cursor. A mismatched prompt window falls back to
+excluding the whole current thread. When no current thread is set in the
+trusted scope, no thread is excluded.
+
+Writes require a WriteSink, which is the host's prequeue policy hook.
+PendingWriteSink adapts the existing PendingWrites queue, its ListStore,
+Binding and WriteGate; it does not add a second queue implementation or scrub
+learning content. The host must wrap it with the existing scrub and policy
+checks before forwarding a write, so rejected or scrubbed learning content is
+handled before local persistence. An acknowledgement means the operation is
+durable in the local queue, not that the engine has applied it. The host keeps
+the queue partition, gate and binding, schedules and executes drains, sends
+settled notifications, and owns the exclusive barrier that makes an erase
+wait for an in-flight engine write. Without a sink, the single facade returns
+an error and never writes directly to the engine.
+
+RunBudget takes a Clock from the host and allows at most eight calls and thirty
+seconds per run, with a fifteen-second timeout per call. It refunds unused
+reservation time when an action finishes or is cancelled, opens the run's
+circuit on timeout, and retains at most 128 run records. A Denied refusal means
+the action was never polled. TimedOut means it was polled and may have changed
+memory; hosts should map only Denied to refusal metadata and report TimedOut as
+an ordinary tool error. The budget contains no host product copy or
+tool-runtime metadata.
+
 ## Scoping invariants
 
 This crate exists so that a model can never choose whose memory it touches.
@@ -84,6 +161,15 @@ the host in a `ToolScope` and are never tool arguments:
 | `place: Namespace` | the node every stored item is written to |
 | `reach: Option<Reach>` | the nodes every read (and forget) is confined to; `None` reads every namespace |
 | `writes: bool` | whether `memory_store` and `memory_forget` are offered |
+
+The single-name facade also uses the trusted workspace, current thread, agent
+id and provider-assigned tool-call id in ToolScope. It stamps these values on
+learnings and uses the thread id to validate a supplied prompt window. These
+fields do not change the behavior of the original seven named tools.
+
+Adding these fields affects downstream ToolScope struct literals that name
+every field. Such callers should use a struct update from ToolScope::default()
+or construct a scope with ToolScope::at.
 
 What the tools enforce:
 
@@ -147,6 +233,26 @@ that. `MemoryTools::with_scope` takes a `ToolScope` directly.
   means across the contract.
 - Anything the engine returns.
 
+## Pending writes
+
+`pending::PendingWrites` bounds each durable partition independently using
+`Limits::max_entries` and `Limits::max_bytes`. Hosts may impose an additional
+limit on the number of on-disk partitions because naming and enumerating those
+files belongs to the storage adapter. `OwnerRegistry` holds weak references:
+active mutations and fences retain shared owner state, and idle owners are
+reclaimed on the next lookup. `PartitionLocks` applies the same lifetime rule
+to drain serialization, with a separate cancellation-safe async lock per
+partition key. `PendingPartitions` shares the in-memory `PendingWrites` queue
+for an active partition and recreates it from a host-supplied `ListStore`
+factory after eviction. Both partition registries accept exact `Eq + Hash`
+keys, including `PathBuf`, so the host does not need to stringify filesystem
+paths.
+
+The queue's `Entry` is the current persisted representation. A host that has
+older durable encodings should keep decoding them into `Entry` while those
+records may still exist; dropping a legacy decoder can make an accepted write
+unreadable after an upgrade.
+
 ## Adapting to a tool runtime
 
 `ToolSpec` is three fields: `name`, `description` and `parameters` (a JSON
@@ -191,12 +297,27 @@ an empty engine yields an empty document. `ContextSpec::reach` confines the
 brief to one agent's part of the tree. Details:
 [`docs/architecture/tools.md`](../../docs/architecture/tools.md#contextmd).
 
+## Memory identity and layout
+
+Hosts adapt their configuration into `IdentityPins` and resolve the acting
+`Identity` for each operation. Resolution preserves the documented precedence:
+host-wide pins, a definition pin, the agent's team, then the default root and
+agent id. With `IdentityPins::v3`, conversations are pooled at `ws:main` below
+the resolved root.
+
+`MemoryLayout::with_pooled_conversations` accepts an **absolute** namespace
+inside the layout root, such as `team:acme/ws:main`; it does not append the
+root. `pooled_conversations_node()` returns the same absolute namespace for
+host migration placement. Callers upgrading from the previous relative-node
+contract must include the layout root when constructing the node.
+
 ## Layout
 
 ```text
 src/
 ├── lib.rs              # crate docs and re-exports
 ├── context/            # the context.md compiler
+├── pending/            # durable write FIFO, owner fences, partition locks
 └── tools/
     ├── mod.rs          # MemoryTools, ToolScope, dispatch
     ├── spec/           # ToolSpec, tool names, JSON Schemas, limits

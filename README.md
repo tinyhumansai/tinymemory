@@ -24,7 +24,7 @@ namespace tree that keeps one tenant's or agent's memory apart from another's.
 
 ## Layout
 
-The workspace is three crates, split by what each may depend on.
+The workspace has three memory crates plus the standalone `tinyredact` library.
 
 ```text
 crates/
@@ -38,9 +38,10 @@ crates/
 │                             scoping), holistic recall and the `context.md` compiler,
 │                             and the agent lifecycle (`AgentMemory`, `Brain`,
 │                             `MemoryLayout`, background jobs)
-└── tinymemory-integrations/  everything that touches the outside world, one module
+├── tinymemory-integrations/  everything that touches the outside world, one module
                               per feature: `cortex` (+ `registry`, `config`),
                               `documents`, `sources`, `safety`, `import`
+└── tinyredact/               standalone on-device secret and PII redaction
 docs/
 ├── architecture/             how the code delivers the spec, one page per concern
 ├── specs/                    behaviour and architecture specifications
@@ -59,13 +60,13 @@ else on request, so a host pays only for what it uses.
 
 | Feature | Module | Adds |
 | --- | --- | --- |
-| `cortex` (default) | `cortex`, `registry`, `config` | `CortexEngine` over both wires, `list_engines`, `build_engine`, `EngineCredential`, `MemoryConfig` |
+| `cortex` (default) | `cortex`, `registry`, `config`, `registry::binder` | `CortexEngine` over both wires; `list_engines`, `build_engine`, `EngineCredential`, cached guarded `EngineBinder`, `MemoryConfig` (implies `safety`) |
 | `documents` | `documents` | Format sniffing and conversion to markdown, producing `StoreItem::Document` |
-| `documents-office` | `documents::OfficeConverter` | PDF, DOCX, PPTX and XLSX to markdown (implies `documents`) |
+| `documents-office` | `documents::OfficeConverter` | PDF, DOCX and PPTX to markdown; XLSX is temporarily unsupported (implies `documents`) |
 | `brain` | `brain` | Files into `tinymemory_tools::BrainDocument`s, by the source type their format implies (implies `documents`) |
 | `sources` | `sources` | Folder, file and conversation readers (implies `documents`) |
 | `sources-network` | `sources::fetch` and the network readers | GitHub, RSS and web-page readers and `fetch_url`, behind the SSRF guard (implies `sources`) |
-| `safety` | `safety` | Secret and PII scrubbing of a `StoreItem` |
+| `safety` | `safety` | Secret and PII scrubbing plus `ScrubbingEngine` and `TimedEngine` |
 | `legacy-import` | `import` | Migrating a v1 (embedded TinyCortex) workspace into any engine |
 | `full` | all of the above | `cortex`, `documents-office`, `brain`, `sources-network`, `safety`, `legacy-import` |
 
@@ -84,7 +85,7 @@ tinymemory-tools = { git = "https://github.com/tinyhumansai/tinymemory", tag = "
 tinymemory-integrations = { git = "https://github.com/tinyhumansai/tinymemory", tag = "vX.Y.Z", features = ["sources", "safety"] }
 ```
 
-All three crates carry the same version, so one tag names them all. A host that
+All workspace crates carry the same version, so one tag names them all. A host that
 only implements an engine needs just `tinymemory-api`; one that only offers
 tools over an engine it already has needs `tinymemory-api` and
 `tinymemory-tools`.

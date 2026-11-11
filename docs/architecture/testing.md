@@ -260,7 +260,7 @@ idempotency pairs, and every recall, answer and forget body for assertions.
 | File | Needs | Covers |
 | --- | --- | --- |
 | `feature_surface.rs` | `full` | the modules compose: scrub an item, store it in the reference engine, run the conformance suite, compile a context |
-| `documents_office.rs` | `documents-office` | `OfficeConverter` prepends to the default `ConverterChain` and supports PDF, DOCX, XLSX, PPTX |
+| `documents_office.rs` | `documents-office` | `OfficeConverter` prepends to the default `ConverterChain` and supports PDF, DOCX and PPTX, while XLSX remains recognized but unsupported |
 | `reader_dispatch.rs` | `sources` (`sources-network` for one test) | local readers are constructed for timers, network readers only for requests |
 | `legacy_import.rs` | `legacy-import` | importing v1 workspaces, every mapping, ordering and resumption |
 | `live_cortexdb.rs`, `office_live.rs` | `cortex` (+ `documents-office`) | a real CortexDB; skipped unless configured |
@@ -289,7 +289,7 @@ unless configured**, so a plain `cargo test` never needs Docker.
 | `TINYMEMORY_TEST_CORTEX_KEY` | both | the bearer; defaults to `tinymemory-cortex-test`, the harness's key |
 | `TINYMEMORY_LIVE_TINYHUMANS_URL` | `live_cortexdb.rs` | base URL of the TinyHumans backend; adds a hosted (`tinyhumans` wire) pass to both tests. Billed to the token's account |
 | `TINYMEMORY_TEST_TINYHUMANS_TOKEN` | `live_cortexdb.rs` | session JWT or `tiny_live_` key for a test account; required with the URL. Pass it through the environment, never a file |
-| `CORTEXDB_VERSION` | `scripts/cortexdb-live.sh` | server release to boot (default `v0.10.4`; `v0.9.9` checks the older one) |
+| `CORTEXDB_VERSION` | `scripts/cortexdb-live.sh`, `scripts/memory-eval.sh` | server release tag to boot (default is the public v0.10.4 image pinned by digest; `v0.9.9` checks the older one) |
 | `CORTEXDB_PORT` | the script and compose file | published port (script default 3142; compose default 3141) |
 | `KEEP` | the script | leave the server running afterwards |
 

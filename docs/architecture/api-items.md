@@ -112,10 +112,13 @@ enforce (`Namespace` is checked when parsed).
 
 `fingerprint()` is a stable 40-character lowercase hex string: the first 20
 bytes of the SHA-256 of the item's JSON serialisation, with
-`meta.observed_at`, `meta.observed_actor` and `meta.tool_call.id` cleared first. It covers **everything else**: kind, text,
-title, turns, learning kind, confidence, evidence, and every metadata field
-including `namespace` (a root namespace is not serialised, so root items hash
-as they did before namespaces existed).
+`meta.observed_at`, `meta.observed_actor` and `meta.tool_call.id` cleared
+first. For conversations, `meta.channel` is cleared too: channel records
+where a turn was observed, while its thread and turn positions define its
+identity. The fingerprint covers **everything else**: kind, text, title,
+turns, learning kind, confidence, evidence, and every metadata field including
+`namespace` (a root namespace is not serialised, so root items hash as they did
+before namespaces existed).
 
 `observed_at` is excluded because it records *when* the item was seen, not
 *what* it is. A host stamps it on every store; hashing it would turn a retried
@@ -161,6 +164,7 @@ namespace are omitted on serialisation.
 | `commit` | `Option<String>` | Commit the item was read at. |
 | `url` | `Option<String>` | URL the item was read from. |
 | `thread_id` | `Option<String>` | Conversation thread. |
+| `channel` | `Option<String>` | Channel the conversation or message came from, such as `telegram`. |
 | `turns` | `Option<TurnRange>` | `{ first, last }`, zero-based and inclusive. |
 | `agent_id` | `Option<String>` | Agent that produced the item. |
 | `tool_call` | `Option<ToolCallRef>` | `{ name, id? }` of the producing tool call. |
@@ -169,9 +173,17 @@ namespace are omitted on serialisation.
 | `observed_at` | `Option<DateTime<Utc>>` | When the underlying fact was observed, as opposed to stored. Excluded from the fingerprint. |
 | `observed_actor` | `Option<ObservedActor>` | `{ id, name? }`: who said or did it when not the memory's owner, such as an email's sender or a channel's (`id` is `type:id`, `user:priya@acme.com`, `user:+15551234567`). Excluded from the fingerprint; the CortexDB engine sends it only with attribution on. |
 
-`MemoryMeta::from_source(kind, id)` sets only the source. `SourceKind` is
+`MemoryMeta::from_source(kind, id)` sets only the source. `MemoryMeta::overlay(host)`
+uses set host optional fields in preference to caller values; the host's
+namespace and source always replace the caller's, including root/default
+values, and host tags append uniquely after caller tags.
+`SourceKind` is
 `folder | file | link | github | rss | conversation | agent |
 import` (`SourceKind::ALL`, `as_str`); `agent` is the default.
+`ObservedActor::for_channel_sender`
+normalizes phone senders on `whatsapp`, `signal`, `imessage`, `linq` and `sms`,
+emails on any channel, and otherwise uses `<channel>:<sender>`. That channel
+vocabulary lives in TinyMemory to avoid a dependency on a host channel crate.
 
 ## `MetaFilter`
 
@@ -184,7 +196,7 @@ match**; an empty filter matches everything.
 | Field | Type | Rule |
 | --- | --- | --- |
 | `reach` | `Option<Reach>` | Item's namespace must be in reach; `None` admits every namespace. |
-| `workspace`, `language`, `repo`, `commit`, `url`, `thread_id`, `agent_id` | `Option<String>` | Exact match. An item with no value never matches a set field. |
+| `workspace`, `language`, `repo`, `commit`, `url`, `thread_id`, `channel`, `agent_id` | `Option<String>` | Exact match. An item with no value never matches a set field. |
 | `folder`, `file_path` | `Option<String>` | Exact, or a path prefix on a `/` boundary: `/a/b` matches `/a/b` and `/a/b/c.rs`, not `/a/bc`. A trailing `/` on the filter value is ignored. |
 | `turns` | `Option<TurnRange>` | Exact range. |
 | `tool_call` | `Option<String>` | Exact tool name of the item's `tool_call`. |

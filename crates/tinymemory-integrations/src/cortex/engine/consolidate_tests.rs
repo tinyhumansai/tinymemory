@@ -137,7 +137,7 @@ async fn the_hosted_wire_acknowledges_a_schedule_without_a_request() {
                 assert_eq!(receipt, ConsolidateReceipt::scheduled());
                 assert_eq!(state.requests().len(), before, "no request is sent");
             }
-            CortexWire::Direct => {
+            CortexWire::Direct | CortexWire::Proxied => {
                 assert_eq!(receipt.status, ConsolidateStatus::Completed);
                 assert!(state.count("POST /v1/beliefs/build") > 0);
             }

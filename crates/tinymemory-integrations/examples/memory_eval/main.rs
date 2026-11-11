@@ -81,7 +81,7 @@ use serde::Serialize;
 use tinymemory_api::conformance::ReferenceEngine;
 use tinymemory_api::{
     ConsolidateRequest, FetchMode, FetchRequest, ForgetTarget, ListRequest, MAX_STORE_MANY,
-    MemoryEngine, MemoryMeta, Reach, Role, StoreItem, Turn, TurnRange, WriteOptions,
+    MemoryEngine, MemoryMeta, Namespace, Reach, Role, StoreItem, Turn, TurnRange, WriteOptions,
 };
 use tinymemory_integrations::cortex::{
     CortexCredential, CortexEngine, StaticBearer, TINYHUMANS_API_ENDPOINT,
@@ -542,9 +542,11 @@ async fn main() -> Result<(), Error> {
 /// The layout of `tenant` in `scenario` for this run.
 fn layout(run: u64, scenario: &str, tenant: &str, pooled: bool) -> Result<MemoryLayout, Error> {
     let root = format!("project:eval-{run}-{}-{tenant}", scenario.replace('_', "-"));
-    let layout = MemoryLayout::new(root.parse()?)?;
+    let root: Namespace = root.parse()?;
+    let layout = MemoryLayout::new(root.clone())?;
     if pooled {
-        Ok(layout.with_pooled_conversations(&"ws:main".parse()?)?)
+        let node: Namespace = format!("{root}/ws:main").parse()?;
+        Ok(layout.with_pooled_conversations(&node)?)
     } else {
         Ok(layout)
     }

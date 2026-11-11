@@ -2,7 +2,7 @@
 //!
 //! [`crate::documents::convert::NativeConverter`] handles what is already text. This is
 //! the converter for the formats people actually drop into memory that are not
-//! — a contract PDF, a spec `.docx`, a pricing `.xlsx`, a deck — so a host
+//! — a contract PDF, a spec `.docx`, a deck — so a host
 //! does not have to bind an extractor of its own for them:
 //!
 //! ```
@@ -16,12 +16,9 @@
 //! | PDF | `pdf-extract`, text layer only | each page's text, whitespace-normalized, pages joined by [`PAGE_BREAK`] |
 //! | DOCX | `zip` + `quick-xml` over `word/document.xml` | one paragraph per `w:p` |
 //! | PPTX | `zip` + `quick-xml` over `ppt/slides/slideN.xml` | slides in numeric order, one paragraph per `a:p` |
-//! | XLSX | `calamine` | one `sheet \| cell \| cell` line per non-empty row |
-//!
-//! A spreadsheet is flattened rather than rebuilt as a table because that is
-//! what recall can use: a chunk reading `Q3 | EMEA | 412000` answers a question
-//! about EMEA revenue, and the same data as aligned columns does not survive
-//! chunking.
+//! XLSX remains recognizable as a format but is temporarily unsupported while
+//! the project waits for a safe Calamine release. Direct conversion returns a
+//! helpful [`Error::UnsupportedFormat`] without opening the workbook.
 //!
 //! ## Hostile input
 //!
@@ -31,12 +28,6 @@
 //! central directory declares sum past [`MAX_DECOMPRESSED_BYTES`] — checked
 //! before any entry is read — and each entry read is capped as well, so an
 //! archive that lies about its sizes cannot force the allocation either.
-//!
-//! A spreadsheet has one more: calamine materializes the dense bounding box of
-//! a sheet's cells, so a tiny workbook with one cell at `A1` and one at
-//! `XFD1048576` would allocate ~17 billion cells. The cells are scanned
-//! sparsely first and a sheet whose box exceeds
-//! [`MAX_SPREADSHEET_DENSE_CELLS`] is refused before that happens.
 //!
 //! `pdf-extract` panics on some malformed documents rather than erroring; the
 //! panic is caught and reported as an unreadable document.
@@ -52,7 +43,6 @@
 mod normalize;
 mod ooxml;
 mod pdf;
-mod xlsx;
 
 use async_trait::async_trait;
 
@@ -67,14 +57,15 @@ use crate::documents::format::DocumentFormat;
 /// before it is refused as a likely zip bomb. See the module docs.
 pub const MAX_DECOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
 
-/// The most cells a spreadsheet's dense used range may span before it is
-/// refused. The used range of a real spreadsheet is a small fraction of the
-/// grid, so this only bites hostile input; see the module docs.
+/// The historical spreadsheet used-range cap, retained for API compatibility.
+///
+/// The built-in spreadsheet reader is temporarily disabled, so the limit is
+/// not currently applied by [`OfficeConverter`].
 pub const MAX_SPREADSHEET_DENSE_CELLS: usize = 1_000_000;
 
-/// Converts PDF, DOCX, PPTX and XLSX documents to markdown, in-process.
+/// Converts PDF, DOCX and PPTX documents to markdown, in-process.
 ///
-/// Claims exactly those four formats, so it composes with
+/// Claims exactly those three formats, so it composes with
 /// [`crate::documents::convert::NativeConverter`] in a [`crate::documents::convert::ConverterChain`]
 /// without shadowing it. A document whose text cannot be read — malformed,
 /// over a cap, or a scanned PDF with no text layer — is [`Error::Invalid`]
@@ -101,7 +92,12 @@ impl OfficeConverter {
             DocumentFormat::Pdf => paged(&pdf::extract(bytes)?),
             DocumentFormat::Docx => normalize::normalize(&ooxml::docx(bytes)?),
             DocumentFormat::Pptx => normalize::normalize(&ooxml::pptx(bytes)?),
-            DocumentFormat::Xlsx => normalize::normalize(&xlsx::extract(bytes)?),
+            DocumentFormat::Xlsx => {
+                return Err(Error::UnsupportedFormat(
+                    "spreadsheet import is temporarily disabled until a safe reader release is available"
+                        .to_string(),
+                ));
+            }
             other => {
                 return Err(Error::UnsupportedFormat(format!(
                     "the office converter does not handle {other}"
@@ -136,10 +132,7 @@ impl DocumentConverter for OfficeConverter {
     fn supports(&self, format: DocumentFormat) -> bool {
         matches!(
             format,
-            DocumentFormat::Pdf
-                | DocumentFormat::Docx
-                | DocumentFormat::Xlsx
-                | DocumentFormat::Pptx
+            DocumentFormat::Pdf | DocumentFormat::Docx | DocumentFormat::Pptx
         )
     }
 

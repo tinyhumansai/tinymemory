@@ -62,6 +62,12 @@ pub(crate) fn item(id: &str) -> String {
     format!("tm:i:{}", digest(id))
 }
 
+/// The hashed thread label used to locate conversations when recovering a
+/// pre-channel-neutral item identity in one exact kind scope.
+pub(crate) fn thread(thread_id: &str) -> String {
+    format!("tm:t:{}", digest(thread_id))
+}
+
 /// One labelled metadata field: its label prefix, how to read it from
 /// stored metadata, and how to read the wanted value from a filter.
 struct MetaField {
@@ -70,9 +76,11 @@ struct MetaField {
     wanted: fn(&MetaFilter) -> Option<&str>,
 }
 
-/// The exact-match fields that are labelled, in the order a filter picks one
-/// to narrow by: the most selective first. `folder` and `file_path` are not
-/// here because they also match as a prefix, which a digest cannot.
+/// The exact-match fields used to narrow the legacy broad read, in the order
+/// a filter picks one: the most selective first. `folder`, `file_path` and
+/// `channel` are not here: the first two match as prefixes, and channel uses
+/// a supplemental pack so events written before channel labels remain
+/// readable.
 const META_FIELDS: [MetaField; 6] = [
     MetaField {
         prefix: "tm:t:",
@@ -110,13 +118,33 @@ const META_FIELDS: [MetaField; 6] = [
 /// for several source kinds, which a label filter's any-of reading serves.
 const SOURCE_KIND_PREFIX: &str = "tm:k:";
 
+/// A channel label can narrow a supplemental recall pack for new records.
+const CHANNEL_PREFIX: &str = "tm:c:";
+
+/// A channel-and-workspace label confines that pack to one workspace.
+const CHANNEL_WORKSPACE_PREFIX: &str = "tm:cw:";
+
 /// Every label an event of item `id` with `meta` carries: the item label, one
-/// per set labelled field, and the source kind. At most eight.
-pub(crate) fn for_item(id: &str, meta: &MemoryMeta) -> Vec<String> {
+/// per set labelled field, the source kind and channel lookup labels. At most
+/// ten.
+pub(crate) fn for_item(
+    id: &str,
+    meta: &MemoryMeta,
+    workspace_path_digest: Option<&str>,
+) -> Vec<String> {
     let mut labels = vec![item(id)];
     for field in &META_FIELDS {
         if let Some(value) = (field.held)(meta) {
             labels.push(format!("{}{}", field.prefix, digest(value)));
+        }
+    }
+    if let Some(channel) = meta.channel.as_deref() {
+        labels.push(format!("{CHANNEL_PREFIX}{}", digest(channel)));
+        if let Some(workspace) = workspace_path_digest.or(meta.workspace.as_deref()) {
+            labels.push(format!(
+                "{CHANNEL_WORKSPACE_PREFIX}{}",
+                digest(&format!("{channel}\0{workspace}"))
+            ));
         }
     }
     labels.push(format!(
@@ -124,6 +152,28 @@ pub(crate) fn for_item(id: &str, meta: &MemoryMeta) -> Vec<String> {
         digest(meta.source.kind.as_str())
     ));
     labels
+}
+
+/// The supplemental label for a channel-filtered recall pack. The ordinary
+/// narrowing path remains broad so older envelopes without channel labels
+/// stay visible.
+pub(crate) fn channel_narrowing(filter: &MetaFilter) -> Option<Vec<String>> {
+    let channel = filter.channel.as_deref()?;
+    let label = match filter.workspace.as_deref() {
+        Some(workspace) => {
+            let workspace = if super::is_absolute(workspace) {
+                path_digest(workspace)
+            } else {
+                workspace.to_string()
+            };
+            format!(
+                "{CHANNEL_WORKSPACE_PREFIX}{}",
+                digest(&format!("{channel}\0{workspace}"))
+            )
+        }
+        None => format!("{CHANNEL_PREFIX}{}", digest(channel)),
+    };
+    Some(vec![label])
 }
 
 /// The one label filter that narrows a read for `filter`, if any field of it

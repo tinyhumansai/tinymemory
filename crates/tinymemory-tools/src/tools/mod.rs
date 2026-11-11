@@ -32,8 +32,10 @@
 //! offer the operation, which is what that variant means across the contract.
 
 mod args;
+pub mod budget;
 mod read;
 mod render;
+pub mod single;
 mod spec;
 mod write;
 
@@ -61,6 +63,16 @@ pub struct ToolScope {
     /// The user's IANA time zone (`Asia/Kolkata`): the zone a model's
     /// `refers_to` dates are read in. `None` reads them in UTC.
     pub zone: Option<String>,
+    /// The trusted workspace that produced a learning.
+    pub workspace: Option<String>,
+    /// The current thread, when these tools run inside one.
+    pub thread_id: Option<String>,
+    /// The agent that made the call.
+    pub agent_id: Option<String>,
+    /// The provider-assigned call name and id. The single facade preserves
+    /// them; its configured tool name is used only when no call reference is
+    /// set.
+    pub tool_call: Option<tinymemory_api::ToolCallRef>,
 }
 
 impl Default for ToolScope {
@@ -72,6 +84,10 @@ impl Default for ToolScope {
             reach: None,
             writes: true,
             zone: None,
+            workspace: None,
+            thread_id: None,
+            agent_id: None,
+            tool_call: None,
         }
     }
 }
@@ -86,6 +102,10 @@ impl ToolScope {
             place,
             writes: true,
             zone: None,
+            workspace: None,
+            thread_id: None,
+            agent_id: None,
+            tool_call: None,
         }
     }
 
@@ -164,9 +184,17 @@ impl MemoryTools {
     pub fn placed_at(mut self, place: Namespace) -> Self {
         let writes = self.scope.writes;
         let zone = self.scope.zone.take();
+        let workspace = self.scope.workspace.take();
+        let thread_id = self.scope.thread_id.take();
+        let agent_id = self.scope.agent_id.take();
+        let tool_call = self.scope.tool_call.take();
         self.scope = ToolScope {
             writes,
             zone,
+            workspace,
+            thread_id,
+            agent_id,
+            tool_call,
             ..ToolScope::at(place)
         };
         self

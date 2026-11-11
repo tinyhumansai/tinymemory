@@ -14,14 +14,15 @@ plus `list`, `forget`, `explore` and `get` for paging, removal and browsing.
 
 ## The three parts
 
-The workspace has three crates under `crates/`, split by what each is allowed
-to depend on.
+The workspace has three memory crates under `crates/`, plus `tinyredact`, a
+standalone local secret and PII redaction library.
 
 | Crate | Role | Why it is separate |
 | --- | --- | --- |
 | `tinymemory-api` | The **contract**: `MemoryEngine`, items, metadata, filters, namespaces, errors. With the `conformance` feature, the suite every engine must pass and an in-memory reference engine. | It performs no I/O and links no runtime, HTTP stack or storage engine, so an engine, a tool layer or a host can depend on it without inheriting anything else. |
 | `tinymemory-tools` | The **agent surface**: `MemoryTools` (seven model-callable tools with JSON Schemas and host-fixed scoping), holistic recall and the `context.md` compiler, and the agent lifecycle — `AgentMemory`, `Brain`, `MemoryLayout`, background jobs (see [lifecycle.md](lifecycle.md)). | It works over any `MemoryEngine`, has no tool-runtime dependency, and is where "a model must never choose whose memory it touches" is enforced. |
 | `tinymemory-integrations` | Everything that touches the **outside world**: the CortexDB engine, the engine registry and `MemoryConfig`, document conversion, source readers, safety scrubbing and the legacy v1 import. | Each integration is a Cargo feature, so a host pays only for the ones it uses. |
+| `tinyredact` | Local secret and personal identifier detection and scrubbing. | It has no network access and can be used independently of memory integrations. |
 
 ## Dependency graph
 
@@ -55,7 +56,7 @@ alone, so the contract is the only coupling point.
 | `tinymemory-tools` | (none) | Every module (`tools`, `context`, `recall`, `layout`, `brain`, `lifecycle`, `background`) is always built. |
 | `tinymemory-integrations` | `cortex` (default) | `cortex::CortexEngine` (both wires), `registry` (`list_engines`, `build_engine`), `config` (`MemoryConfig`) |
 | | `documents` | Format sniffing and conversion to markdown |
-| | `documents-office` | PDF, DOCX, PPTX, XLSX conversion (implies `documents`) |
+| | `documents-office` | PDF, DOCX and PPTX conversion; XLSX temporarily unsupported (implies `documents`) |
 | | `sources` | Readers for folders, files, conversations (implies `documents`) |
 | | `sources-network` | GitHub, RSS and web-page readers behind the SSRF guard (implies `sources`) |
 | | `safety` | Secret and PII scrubbing of a `StoreItem` |

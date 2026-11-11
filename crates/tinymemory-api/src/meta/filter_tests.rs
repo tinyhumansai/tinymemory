@@ -15,6 +15,7 @@ fn meta() -> MemoryMeta {
         commit: Some("abc".into()),
         url: Some("https://x.test".into()),
         thread_id: Some("t1".into()),
+        channel: Some("telegram".into()),
         turns: Some(TurnRange { first: 0, last: 3 }),
         agent_id: Some("a1".into()),
         tool_call: Some(crate::ToolCallRef {
@@ -33,11 +34,51 @@ fn meta() -> MemoryMeta {
 }
 
 #[test]
+fn channel_filters_are_exact_and_leave_other_channels_out() {
+    let filter = MetaFilter {
+        channel: Some("telegram".into()),
+        ..MetaFilter::default()
+    };
+    assert!(filter.matches(ItemKind::Learning, &meta()));
+
+    let mut another = meta();
+    another.channel = Some("discord".into());
+    assert!(!filter.matches(ItemKind::Learning, &another));
+
+    let mut unstamped = meta();
+    unstamped.channel = None;
+    assert!(!filter.matches(ItemKind::Learning, &unstamped));
+}
+
+#[test]
 fn an_empty_filter_matches_everything() {
     let filter = MetaFilter::default();
     assert!(filter.is_empty());
     assert!(filter.matches(ItemKind::Document, &meta()));
     assert!(filter.matches(ItemKind::Learning, &MemoryMeta::default()));
+}
+
+#[test]
+fn tags_any_constructor_matches_any_tag_and_leaves_other_fields_unset() {
+    let filter = MetaFilter::tags_any(["flow:f1", "flows"]);
+    assert_eq!(
+        filter.tags_any,
+        ["flow:f1".to_string(), "flows".to_string()]
+    );
+    assert_eq!(filter.reach, None);
+    assert_eq!(filter.workspace, None);
+
+    let matching = MemoryMeta {
+        tags: vec!["flows".into()],
+        ..MemoryMeta::default()
+    };
+    assert!(filter.matches(ItemKind::Learning, &matching));
+
+    let nonmatching = MemoryMeta {
+        tags: vec!["flow:f2".into()],
+        ..MemoryMeta::default()
+    };
+    assert!(!filter.matches(ItemKind::Learning, &nonmatching));
 }
 
 #[test]

@@ -79,6 +79,7 @@ mod checkpoint;
 mod convert;
 mod counts;
 mod error;
+mod importer;
 mod items;
 mod migrate;
 mod sections;
@@ -87,6 +88,12 @@ mod workspace;
 pub use checkpoint::{Checkpoint, ChunkCursor, ImportedItem};
 pub use counts::LegacyCounts;
 pub use error::{Error, Result};
+pub use importer::{
+    Begun, CHECKPOINT_EVERY, CheckpointStore, Consent, Describe, FailedItem, ImportCounts,
+    ImportError, ImportFile, ImportPhase, ImportState, Importer, MemoryCheckpointStore, Pacer,
+    PauseCheck, ResumePlan, RetryPolicy, STORE_BATCH, count_legacy, is_insufficient_credits,
+    open_legacy, record_resume_failure, skips_item,
+};
 pub use items::{DEFAULT_PAGE_SIZE, Items};
 pub use migrate::{MigrationReport, migrate, migrate_with};
 pub use sections::EXTERNAL_SYNC_TAG;

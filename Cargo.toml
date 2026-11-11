@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
-# TinyMemory is three crates, one directory each under `crates/`:
+# TinyMemory's memory layer is three crates under `crates/`; `tinyredact` is
+# the separate local redaction library:
 #
 # - `tinymemory-api`: the core contract (`MemoryEngine`, items, metadata,
 #   namespaces, errors) and, behind `conformance`, the suite every engine must
@@ -10,16 +11,17 @@ resolver = "2"
 # - `tinymemory-integrations`: everything that talks to the outside world —
 #   the CortexDB engine and its registry, document conversion, source readers,
 #   safety scrubbing and the legacy v1 import — each behind a feature.
+# - `tinyredact`: standalone secret and personal identifier redaction.
 members = ["crates/*"]
 # `worktrees/` holds `git worktree` checkouts of this same repository. Each one
 # contains a full copy of this manifest and every crate under it, so without
 # this entry cargo walks into them and reports duplicate packages.
 exclude = ["worktrees"]
 
-# Shared by every crate. The release workflow bumps `version` here, so the
-# three crates always carry the same version and one tag names all of them.
+# Shared by every crate. The release workflow bumps `version` here, so all
+# workspace packages carry the same version and one tag names all of them.
 [workspace.package]
-version = "1.27.2"
+version = "2.0.2"
 edition = "2024"
 rust-version = "1.96"
 license = "GPL-3.0-only"

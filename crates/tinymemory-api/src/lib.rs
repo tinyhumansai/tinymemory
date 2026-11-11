@@ -71,7 +71,10 @@ pub use consolidate::{
     BELIEF_TAG, BeliefsRequest, ConsolidateReceipt, ConsolidateRequest, ConsolidateStatus,
     Consolidation,
 };
-pub use engine::{EngineDescriptor, EngineHealth, MAX_STORE_MANY, MemoryEngine, validate_many};
+pub use engine::{
+    CONTRACT_VERSION, EngineDescriptor, EngineHealth, EngineStatus, EngineStatusHealth,
+    MAX_STORE_MANY, MemoryEngine, validate_many,
+};
 pub use error::{Error, Result};
 pub use explore::{
     ExplorePage, ExploreRequest, Facet, FacetBucket, GetRequest, MAX_BUCKETS, MAX_GET_IDS,
@@ -85,7 +88,8 @@ pub use namespace::{Namespace, Reach, Segment, SegmentKind};
 pub use provenance::{ProvenancePolicy, wrap_untrusted_for_agent};
 pub use query::{
     Citation, EraseReport, EraseRequest, ExportPage, Exported, FetchMode, FetchPage, FetchRequest,
-    ForgetReport, ForgetTarget, Hit, ListPage, ListRequest, RecallAnswer, RecallRequest, TimeHint,
+    ForgetReport, ForgetTarget, Hit, ListPage, ListRequest, RecallAnswer, RecallMode,
+    RecallRequest, ThreadWindow, TimeHint,
 };
 pub use write::{WaitFor, WriteOptions};
 

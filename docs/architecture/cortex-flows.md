@@ -176,8 +176,10 @@ Only `Hybrid`. Other modes fail `Error::Unsupported` before any request.
    (Three raw events per wanted hit, because a conversation contributes
    several turns and the client-side filter drops some. 1000 events is the
    deepest a fetch page can go.)
-4. Decode each pack's events, apply the **full filter** client-side, keep each
-   item once at its best rank.
+4. Decode each pack's events, apply the **full filter** client-side, drop the
+   turns `exclude_thread` covers (CortexDB's recall filters only narrow by
+   label, so an exclusion cannot be sent), and keep each item once at its
+   best rank.
 5. **Interleave** the scopes rank by rank: every scope's best, then every
    scope's second, and so on.
 6. Take the page `[offset, end)`. A conversation hit carries the whole
@@ -198,15 +200,21 @@ Recall builds a pack, asks the answer route **once** with `use_pack_id`
    inherits, every ancestor; below it too for a subtree reach), or, with **no reach** (an
    unscoped, administrative read), every kind scope the engine holds
    (`v1/scopes/list`). No scope to read (nothing held, or a filter that
-   admits no kinds) answers empty without a request. Then one pack per scope,
-   built four at a time, exact (`view: "granular"`, never server-side
+   admits no kinds) answers empty without a request. Then one broad pack per
+   scope, plus a channel-specific supplemental pack when the filter has a
+   channel, built four requests at a time, exact (`view: "granular"`, never server-side
    traversal), so a sibling agent's scope is never in a pack and no pack is a
    parent scope's storage-order sample. Scopes are ordered most specific node
    first.
 2. Each pack's events budget is `2 * limit`, with the derived layers sharing
-   `limit` (see [the wire](cortex-wire.md#recall-recall)).
+   `limit` (see [the wire](cortex-wire.md#recall-recall)). The broad pack is
+   retained so channel records written before lookup labels existed remain
+   visible; the supplemental pack moves newly labelled matches ahead of the
+   server's top-k cutoff.
 3. Decode and filter each pack's events with the full `MetaFilter` (reach
-   included).
+   included), and drop the turns `exclude_thread` covers. The exclusion
+   reaches the **citations only**: CortexDB writes the answer text from the
+   whole pack (step 4), which can still hold the excluded turns.
 4. The answer comes from the pack holding the **most admitted events**, the
    most specific node on a tie. A missing `pack_id` is `Error::Engine`.
    `/v1/answer` takes one `use_pack_id` (its scope must match), so the
@@ -229,6 +237,40 @@ Recall builds a pack, asks the answer route **once** with `use_pack_id`
    specific node's first, capped at `limit`, with `score: None` and the
    envelope's text as the snippet. A pack with no decodable events still
    returns the answer, with no citations.
+
+### Recall in evidence mode
+
+`RecallMode::Evidence` reads the same packs (step 1, with step 2's budgets)
+and **never asks the answer route**: no model runs after retrieval, and no
+answer is grounded on one pack while citing others. The engine renders the
+evidence itself (`engine/evidence.rs`):
+
+0. Wait for the packs at most 12 seconds from the start of the recall
+   (`Timing::evidence`). A pack still building then is left out with a
+   warning, so one slow scope no longer costs the evidence of the others
+   inside a host's tool-call limit (OpenHuman's is 15 seconds). A recall
+   that left a pack out says so: if what arrived holds nothing it is
+   `Unavailable` (as is one where no pack arrived), never an empty answer
+   that reads as "nothing stored"; otherwise the evidence ends with a note
+   that memory was only partly searched. A pack that fails still fails the
+   recall.
+1. Decode each pack's events, keep what the full `MetaFilter` admits, and
+   drop the turns `exclude_thread` covers, noting their event ids.
+2. When the filter narrows by reach and kinds alone, render the `facts`
+   layer (`[valid_from date] statement`) and the `beliefs` layer
+   (`subject predicate object`), leaving out a fact whose `supports` name an
+   excluded event and a belief resting on such a fact. Derived records carry
+   no item metadata, so any other filter field leaves them out. `episodes`
+   and `understanding` are not rendered.
+3. Merge the events rank by rank across the packs (most specific node
+   first) and render each as `[YYYY-MM-DD HH:MM UTC] [role] text`.
+4. The answer is `## Facts`, `## Beliefs` and `## Conversation`, each line
+   once, empty when nothing was gathered; `model` is `None`. Citations are
+   the conversation's items, at most `limit`.
+
+Because the text is rendered from decoded events, an excluded turn never
+appears in it, unlike the answer route, whose text CortexDB writes from the
+whole pack.
 
 ## Forget
 

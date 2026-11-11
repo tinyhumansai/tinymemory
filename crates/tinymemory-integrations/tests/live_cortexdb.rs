@@ -22,6 +22,7 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tinymemory_api::{
     EraseRequest, FetchMode, FetchRequest, ForgetTarget, ItemKind, LearningKind, ListRequest,
@@ -73,6 +74,16 @@ fn run_id() -> String {
         .expect("clock after the epoch")
         .as_nanos();
     format!("live-{nanos}")
+}
+
+/// The lookup-label digest prefix used to inspect a broad live pack without
+/// sending the workspace path itself.
+fn label_digest(value: &str) -> String {
+    Sha256::digest(value.as_bytes())
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn meta(workspace: &str, source: SourceKind) -> MemoryMeta {
@@ -191,6 +202,236 @@ async fn the_live_server_upholds_the_contract_in_layout_v3() {
         record["auto_provisioned"], false,
         "registered, not auto-made: {record}"
     );
+}
+
+/// A real channel filter must narrow CortexDB before its top-k budget. Seed
+/// five distinct same-scope records, inspect the actual broad top two, and
+/// choose the wanted record from those the server omitted.
+#[tokio::test]
+async fn a_channel_filter_recalls_beyond_the_broad_pack_budget() {
+    let _alone = ONE_AT_A_TIME.lock().await;
+    let Ok(url) = std::env::var("TINYMEMORY_LIVE_CORTEXDB_URL") else {
+        eprintln!("TINYMEMORY_LIVE_CORTEXDB_URL unset; skipping");
+        return;
+    };
+    let key = std::env::var("TINYMEMORY_TEST_CORTEX_KEY").unwrap_or_else(|_| DEFAULT_KEY.into());
+    let engine = CortexEngine::direct(&url, CortexCredential::api_key(key))
+        .expect("a valid live CortexDB endpoint");
+    let run = run_id();
+    let namespace: tinymemory_api::Namespace = format!("project:channel-{run}")
+        .parse()
+        .expect("a valid namespace");
+    let workspace = format!("/tmp/tinymemory-channel-{run}");
+    let marker = "Cobalt memory";
+    let candidates = [
+        ("Cobalt memory alpha", "channel-alpha", "alpha"),
+        ("Cobalt memory bravo", "channel-bravo", "bravo"),
+        ("Cobalt memory charlie", "channel-charlie", "charlie"),
+        ("Cobalt memory delta", "channel-delta", "delta"),
+        ("Cobalt memory echo", "channel-echo", "echo"),
+    ];
+    let mut ids = Vec::with_capacity(candidates.len());
+    for (text, channel, source_id) in candidates {
+        let item = StoreItem::document(
+            text,
+            MemoryMeta {
+                namespace: namespace.clone(),
+                workspace: Some(workspace.clone()),
+                channel: Some(channel.to_string()),
+                source: SourceRef {
+                    kind: SourceKind::Agent,
+                    id: Some(format!("{run}-{source_id}")),
+                },
+                ..MemoryMeta::default()
+            },
+        );
+        ids.push(item.fingerprint());
+        engine.store(item).await.expect("store a channel candidate");
+    }
+
+    let reach = Some(tinymemory_api::Reach::subtree(namespace.clone()));
+    let broad_filter = MetaFilter {
+        workspace: Some(workspace.clone()),
+        reach: reach.clone(),
+        ..MetaFilter::kinds([ItemKind::Document])
+    };
+    let mut expected_texts: Vec<String> = candidates
+        .iter()
+        .map(|(text, _, _)| (*text).to_string())
+        .collect();
+    expected_texts.sort();
+    let listed = list_exactly(&engine, &broad_filter, &expected_texts).await;
+    assert_eq!(
+        listed, expected_texts,
+        "all five candidates reached the server"
+    );
+
+    // Inspect the server's actual broad pack, not the smaller citation page.
+    // Its two results establish the cutoff; choosing one of the other three
+    // candidates avoids any assumption about vector ranking or tie-breaks.
+    let scope = format!("app:tinymemory/{namespace}/app:documents");
+    let broad_label = format!("tm:w:{}", label_digest(&workspace));
+    let broad_deadline = Instant::now() + VISIBILITY;
+    let (broad_pack, broad_texts) = loop {
+        let pack: serde_json::Value = reqwest::Client::new()
+            .post(format!("{url}/v1/recall"))
+            .bearer_auth(
+                std::env::var("TINYMEMORY_TEST_CORTEX_KEY").unwrap_or_else(|_| DEFAULT_KEY.into()),
+            )
+            .json(&serde_json::json!({
+                "scope": scope,
+                "query": marker,
+                "view": "granular",
+                "include": ["events"],
+                "filters": { "metadata": { "labels": [broad_label] } },
+                "budgets": {
+                    "max_tokens": 1_572_864,
+                    "per_layer_limits": { "events": 2 }
+                }
+            }))
+            .send()
+            .await
+            .expect("request the broad two-event control pack")
+            .error_for_status()
+            .expect("the broad control pack succeeds")
+            .json()
+            .await
+            .expect("the broad control pack is JSON");
+        let events = pack
+            .pointer("/layers/events")
+            .and_then(serde_json::Value::as_array)
+            .expect("the broad control pack has events");
+        let texts: Vec<String> = events
+            .iter()
+            .filter_map(|event| {
+                event
+                    .pointer("/content/text")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect();
+        if events.len() == 2 && texts.len() == 2 {
+            break (pack, texts);
+        }
+        assert!(
+            Instant::now() < broad_deadline,
+            "broad events are still indexing: {texts:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    assert!(
+        broad_texts.iter().all(|text| expected_texts.contains(text)),
+        "the broad pack returned only seeded candidates: {broad_texts:?}"
+    );
+    assert!(
+        !broad_pack.to_string().contains(&workspace),
+        "the local workspace path is never returned in event labels"
+    );
+    assert!(
+        broad_pack
+            .pointer("/layers/events")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|events| events.iter().all(|event| {
+                event
+                    .pointer("/context/labels")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|labels| {
+                        labels.contains(&serde_json::Value::String(broad_label.clone()))
+                    })
+            })),
+        "the raw control only narrows by the hashed workspace label"
+    );
+    let wanted_index = candidates
+        .iter()
+        .position(|(text, _, _)| !broad_texts.iter().any(|seen| seen == text))
+        .expect("three candidates are outside the two-event broad pack");
+    let (wanted_text, wanted_channel, _) = candidates[wanted_index];
+    let wanted_id = ids[wanted_index].as_str();
+    let distractor_ids: Vec<&str> = ids
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != wanted_index)
+        .map(|(_, id)| id.as_str())
+        .collect();
+    let channel_filter = MetaFilter {
+        channel: Some(wanted_channel.to_string()),
+        ..broad_filter
+    };
+
+    let deadline = Instant::now() + VISIBILITY;
+    let channel_answer = loop {
+        let mut recall = RecallRequest::new(marker, 1);
+        recall.filter = channel_filter.clone();
+        let answer = engine.recall(recall).await.expect("channel recall");
+        if answer
+            .citations
+            .iter()
+            .any(|citation| citation.id.as_str() == wanted_id)
+        {
+            break answer;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "channel recall did not return {wanted_text}"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    };
+    let recall_ids: Vec<&str> = channel_answer
+        .citations
+        .iter()
+        .map(|citation| citation.id.as_str())
+        .collect();
+    assert_eq!(recall_ids, [wanted_id], "recall result: {recall_ids:?}");
+    assert!(
+        recall_ids
+            .iter()
+            .all(|id| distractor_ids.iter().all(|other| *other != *id)),
+        "recall excludes every competing channel"
+    );
+
+    let mut fetch = FetchRequest::new(marker, FetchMode::Hybrid, 1);
+    fetch.filter = channel_filter.clone();
+    let fetched = engine.fetch(fetch).await.expect("channel fetch");
+    let fetched_ids: Vec<&str> = fetched.hits.iter().map(|hit| hit.id.as_str()).collect();
+    assert_eq!(fetched_ids, [wanted_id], "fetch result: {fetched_ids:?}");
+    assert!(
+        fetched_ids
+            .iter()
+            .all(|id| distractor_ids.iter().all(|other| *other != *id)),
+        "fetch excludes every competing channel"
+    );
+
+    let mut evidence = RecallRequest::new(marker, 1);
+    evidence.mode = tinymemory_api::RecallMode::Evidence;
+    evidence.filter = channel_filter;
+    let evidence = engine
+        .recall(evidence)
+        .await
+        .expect("channel Evidence recall");
+    let evidence_ids: Vec<&str> = evidence
+        .citations
+        .iter()
+        .map(|citation| citation.id.as_str())
+        .collect();
+    assert_eq!(
+        evidence_ids,
+        [wanted_id],
+        "Evidence result: {evidence_ids:?}"
+    );
+    assert!(
+        evidence_ids
+            .iter()
+            .all(|id| distractor_ids.iter().all(|other| *other != *id)),
+        "Evidence excludes every competing channel"
+    );
+
+    engine
+        .forget(ForgetTarget::Filter(MetaFilter {
+            reach: Some(tinymemory_api::Reach::subtree(namespace)),
+            ..MetaFilter::default()
+        }))
+        .await
+        .expect("forget the isolated fixture scope");
 }
 
 /// No write claims a v3 root: CortexDB registers only the scope a write

@@ -3,14 +3,19 @@
 The CortexDB memory engine for TinyMemory v2, the `cortex` module of
 `tinymemory-integrations` (feature `cortex`, on by default). One type,
 `CortexEngine`, implements `tinymemory_api::MemoryEngine` over CortexDB's
-append-only event log on two wires:
+append-only event log on three wires:
 
 | Engine id | Constructor | Wire | Auth | Default endpoint |
 | --- | --- | --- | --- | --- |
 | `cortexdb` | `CortexEngine::direct` | `/v1/*`, bare JSON | API key (`CortexCredential`) | `https://api-v1.cortexdb.ai` |
 | `tinyhumans` | `CortexEngine::tinyhumans` | `/memory/*`, `{success,data}` envelopes | `BearerSource`, resolved per request | `https://api.tinyhumans.ai` |
+| `cortexdb-proxied` | `CortexEngine::proxied` | a subset of CortexDB's `/v1/*` routes behind a tenant-multiplexing proxy, `X-Memory-Tenant` per call | the proxy's service credential | none |
 
-Both descriptors declare `fetch_modes = [Hybrid]`: CortexDB's recall body
+The proxied wire names each call's tenant from the leading `user:<id>`
+segment of its namespace and refuses a call without one; see
+[`cortex-wire.md`](../../../../docs/architecture/cortex-wire.md#the-proxied-wire).
+
+Every descriptor declares `fetch_modes = [Hybrid]`: CortexDB's recall body
 accepts only `scope`, `query`, `budgets`, `view`, `include`, `temporal` and
 `filters`, with no keyword/vector switch. `Keyword` and `Vector` fail with
 `Error::Unsupported` before any request.
@@ -33,13 +38,15 @@ This README is the short in-tree summary. The full reference is under
 
 From `tinymemory_integrations::cortex`:
 
-- `CortexEngine::{new, direct, tinyhumans, wire}` (requests time out after 60s)
-- `CortexWire { Direct, TinyHumans }`, `CortexCredential { Static, Dynamic }`
+- `CortexEngine::{new, direct, tinyhumans, proxied, wire}` (requests time
+  out after 60s), `CortexEngine::with_private_network_cleartext`
+- `CortexWire { Direct, TinyHumans, Proxied }`, `CortexCredential { Static, Dynamic }`
 - `BearerSource` (async `bearer()`), `StaticBearer` (redacted `Debug`)
-- `CORTEXDB_ENGINE_ID`, `TINYHUMANS_ENGINE_ID`, `CORTEX_API_ENDPOINT`,
-  `TINYHUMANS_API_ENDPOINT`, `cortexdb_descriptor()`, `tinyhumans_descriptor()`
+- `CORTEXDB_ENGINE_ID`, `TINYHUMANS_ENGINE_ID`, `PROXIED_ENGINE_ID`,
+  `CORTEX_API_ENDPOINT`, `TINYHUMANS_API_ENDPOINT`, `cortexdb_descriptor()`,
+  `tinyhumans_descriptor()`, `proxied_descriptor()`
 - `Error`/`Result` (the contract's own `tinymemory_api::Error`),
-  `error_code`, `is_insufficient_credits`
+  `error_code`, `is_plan_required`
 
 Beyond the contract's reads and writes, the engine consolidates: Direct
 posts `v1/beliefs/build` once per held scope a `ConsolidateRequest` admits
@@ -64,17 +71,19 @@ list_engines}` (modules `config` and `registry`).
 cortex/
 ├── mod.rs          crate-facing docs and the public re-exports
 ├── credential/     CortexCredential, BearerSource, StaticBearer
-├── descriptor/     the two registrations, CortexWire and its route table
+├── descriptor/     the registrations, CortexWire and its route table
 ├── engine/         CortexEngine and one file per operation:
 │                   store, list, explore, fetch, recall, forget, items (get), scopes, cursor,
-│                   attribution (observed_actor and subject on a write)
+│                   attribution (observed_actor and subject on a write),
+│                   tenant (the proxied wire's tenant per call)
 ├── envelope/       the v2 event envelope, scope paths, lookup labels, rebuild
 ├── log/            the event log: write, read (list, scopes, recall, answer),
 │                   visibility waits, forget
 ├── transport/      HttpClient: timeouts, retries, byte caps, failure mapping,
 │                   the actor header
-├── error/          the contract's Error, error_code, is_insufficient_credits
-└── testing/        loopback doubles of both wires (cfg(test) only)
+├── error/          the contract's Error, hosted error_code extraction,
+│                   is_plan_required
+└── testing/        loopback doubles of every wire (cfg(test) only)
 ```
 
 ## Storage layout
@@ -167,14 +176,16 @@ someone else's and is ignored. An item that opts out of derivation
 concepts are derived from it. `context.observed_at` carries the turn's
 `at` or the item's `meta.observed_at`.
 
-**Labels.** Each event carries up to eight `context.labels`, each a 16-hex
+**Labels.** Each event carries up to ten `context.labels`, each a 16-hex
 SHA-256 digest: `tm:i:` (item id) on every event, plus `tm:t:` thread,
 `tm:s:` source id, `tm:r:` repo, `tm:w:` workspace, `tm:a:` agent,
-`tm:l:` language, and `tm:k:` source kind. A read whose filter has a labelled
-field sends **one** label filter (`labels=` comma list on events,
-`filters.metadata.labels` on recall) to narrow server-side, then **always**
-re-applies the full `MetaFilter` client-side. `folder` and `file_path` match
-as prefixes, so they cannot be labelled and are filtered only client-side.
+`tm:l:` language, `tm:k:` source kind, `tm:c:` channel and `tm:cw:` channel
+plus workspace identity (the private path digest for absolute workspaces). Channel recall keeps the existing broad pack for records
+written before these labels existed and adds a pack narrowed by `tm:c:` or
+`tm:cw:` for newer records. Other reads keep their existing broad label so
+old records stay visible. Each pack re-applies the full `MetaFilter`
+client-side. `folder` and `file_path` match as prefixes, so they cannot be
+labelled and are filtered only client-side.
 
 ## Operations
 
@@ -316,11 +327,15 @@ These were measured against a live CortexDB by the v1 adapter. The doubles in
   (`CortexEngine::with_default_headers`, or `EngineSettings::headers` through
   the registry), such as the `x-sdk-name` attribution the TinyHumans backend
   expects. Reserved headers (`Authorization`, `Proxy-Authorization`, `Cookie`,
-  `Host`, `Content-Length`, `Idempotency-Key`, `X-Cortex-Actor`) are refused
+  `Host`, `Content-Length`, `Idempotency-Key`, `X-Cortex-Actor`,
+  `X-Memory-Tenant`) are refused
   with `Error::Config`, and no refusal echoes a value.
 
 - Credentialed cleartext endpoints that are not loopback are refused with
-  `Error::Config`.
+  `Error::Config`, except a cluster-service host (`*.svc`,
+  `*.svc.cluster.local`): it builds, and every call fails with
+  `Error::Config` until `CortexEngine::with_private_network_cleartext` opts
+  in, for an in-cluster service NetworkPolicy keeps inside the cluster.
 - The bearer is resolved on every attempt and sent in a header marked
   sensitive. A source failure, a blank token, or a token containing CR/LF is
   `Unauthorized`, and no request is sent.
@@ -330,10 +345,13 @@ These were measured against a live CortexDB by the v1 adapter. The doubles in
   408/429/500/502/503/504 → `Unavailable`, anything else → `Engine`. Transport
   faults (timeout, DNS, TLS, connect) are `Unavailable`.
 - Hosted failures carry the backend's `errorCode` as a `[CODE] ` message
-  prefix. **402 is `Engine` with `[USER_INSUFFICIENT_CREDITS]`**: it is not
-  transient, so `Unavailable` would invite a retry loop, and it is not a
-  credential fault, so `Unauthorized` would send the host to sign in.
-  `is_insufficient_credits` detects it.
+  prefix. **402 with `[USER_INSUFFICIENT_CREDITS]` is `InsufficientCredits`**:
+  it is not transient and not a credential fault. The typed variant lets a
+  host show a top-up prompt without classifying message text. **A
+  `*_PLAN_REQUIRED` code (`MEMORY_PLAN_REQUIRED`, sent as 403) is `Engine`**:
+  not transient and not a credential fault either, so `Unauthorized` would
+  send the host to sign in; `is_plan_required` detects it. Only a hosted 401
+  says the session expired; a plain 403 says the request was refused.
 - Reads (listings, recall) are retried 3 times with 250ms·2ⁿ backoff on
   `Unavailable`. Writes are sent once.
 - Hosted writes carry a random `Idempotency-Key` claim, reused across that

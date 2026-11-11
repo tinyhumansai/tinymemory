@@ -257,3 +257,39 @@ fn a_tenant_root_is_hosted_only_and_a_retired_root_needs_a_layout() {
     };
     config_error(build_engine("cortexdb", &legacy, key()));
 }
+
+#[test]
+fn host_engine_slot_can_be_read_without_rebinding_or_rewrapping() {
+    let binder = binder::EngineBinder::default();
+    assert!(binder.host_engine().is_none());
+
+    let first_raw = Arc::new(tinymemory_api::conformance::ReferenceEngine::new());
+    binder.install_host_engine(first_raw.clone(), crate::safety::Policy::corroborated());
+    let first = binder.host_engine().expect("host engine is installed");
+    assert_eq!(first.id, first_raw.descriptor().id);
+    assert_eq!(first.endpoint, binder::HOST_ENGINE_ENDPOINT);
+
+    let repeated = binder.host_engine().expect("host engine remains installed");
+    assert!(Arc::ptr_eq(&first.engine, &repeated.engine));
+
+    let replacement_raw = Arc::new(tinymemory_api::conformance::ReferenceEngine::new());
+    binder.install_host_engine(
+        replacement_raw.clone(),
+        crate::safety::Policy::corroborated(),
+    );
+    let replacement = binder
+        .host_engine()
+        .expect("replacement is immediately visible");
+    let replacement_again = binder.host_engine().expect("replacement remains installed");
+    assert!(Arc::ptr_eq(&replacement.engine, &replacement_again.engine));
+    assert!(!Arc::ptr_eq(&first.engine, &replacement.engine));
+    assert_eq!(replacement.id, replacement_raw.descriptor().id);
+    assert_eq!(replacement.endpoint, binder::HOST_ENGINE_ENDPOINT);
+
+    assert!(binder.clear_host_engine());
+    assert!(binder.host_engine().is_none());
+    assert_eq!(
+        replacement.engine.descriptor().id,
+        replacement_raw.descriptor().id
+    );
+}
