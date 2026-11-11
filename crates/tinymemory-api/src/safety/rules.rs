@@ -87,21 +87,18 @@ pub(crate) fn is_luhn_valid(raw: &str) -> bool {
     sum.is_multiple_of(10)
 }
 
-/// Accept a run of digits and single separators as a payment card only when
-/// it is complete as written: either a PAN of 13–19 digits that passes Luhn,
-/// or such a PAN followed by one adjacent group of 3–4 digits after the last
-/// separator, the way a CVV is written next to the card it belongs to. The
-/// run is judged as a unit — the whole run first, then the split at its last
-/// separator — so a Luhn-valid head of something longer is not a card, and
-/// an unlabelled CVV is set beside the PAN rather than folded into it.
+/// Accept a run of digits and single separators as a payment card when it is
+/// a Luhn-valid PAN of 13–19 digits, or when it starts with one that ends at
+/// a separator: a PAN with its CVV group written beside it, or a PAN that runs
+/// on into more digits. The whole run counts as the card, so redaction takes
+/// the CVV and any trailing digits with it, and a valid PAN is never left in
+/// place because the run around it is longer than a card. A run with no
+/// separator has no head to try and is judged whole.
 pub(crate) fn is_complete_card(raw: &str) -> bool {
-    if is_luhn_valid(raw) {
-        return true;
-    }
-    let Some((pan, cvv)) = raw.rsplit_once([' ', '-']) else {
-        return false;
-    };
-    (3..=4).contains(&cvv.len()) && cvv.bytes().all(|b| b.is_ascii_digit()) && is_luhn_valid(pan)
+    is_luhn_valid(raw)
+        || raw
+            .match_indices([' ', '-'])
+            .any(|(i, _)| is_luhn_valid(&raw[..i]))
 }
 
 /// Validate an IBAN candidate (ISO 13616): separators removed, 15–34
@@ -190,11 +187,10 @@ fn build_rules() -> Vec<Rule> {
         // Payment card: a run of 13 or more digits with at most one space or
         // hyphen between any two of them. The pattern has no upper bound on
         // purpose: it consumes the whole run so the validator can judge it as
-        // a unit — a complete 13–19 digit PAN that passes Luhn, or one with a
-        // single adjacent 3–4 digit CVV group after its last separator — and
-        // an overlong run is left alone rather than matched on a Luhn-valid
-        // head that happens to end at a separator. Redaction replaces the
-        // whole span, CVV group included.
+        // a unit — a 13–19 digit PAN that passes Luhn, or a run that starts
+        // with one ending at a separator (a PAN and its CVV group, or a PAN
+        // followed by more digits). Redaction replaces the whole span, so no
+        // valid PAN is left behind in a longer run.
         pattern_rule(
             PiiCategory::CreditCard,
             r"\b\d(?:[ -]?\d){12,}\b",

@@ -250,23 +250,22 @@ fn luhn_invalid_number_is_not_a_card() {
 }
 
 #[test]
-fn overlong_card_candidate_is_not_matched_on_its_head() {
-    // 4111 1111 1111 1111 003 happens to be a Luhn-valid 19-digit run, but it
-    // is the head of something longer. The run is judged as a unit: a card
-    // that continues past 19 digits, or past one adjacent CVV group, is not
-    // a card at all rather than a card that stops where Luhn happens to pass.
+fn a_run_that_starts_with_a_card_is_a_card() {
+    // A Luhn-valid PAN followed by more digits is still a card: the run is
+    // flagged whole rather than passed over because it is longer than one.
     for raw in [
         "4111 1111 1111 1111 003-1",
         "4111 1111 1111 1111 1111 1111",
-        "41111111111111110031",
         "4111 1111 1111 1111 12",
     ] {
         let r = scan(raw);
-        assert!(
-            !r.has_category(PiiCategory::CreditCard),
-            "head of an overlong run flagged as card in {raw:?}: {r:?}"
-        );
+        assert!(r.has_category(PiiCategory::CreditCard), "missed in {raw:?}");
+        assert_eq!(r.level, RiskLevel::High, "{raw:?}");
     }
+    // With no separator there is no head to try: an overlong run of digits is
+    // judged whole and is not a card.
+    let r = scan("41111111111111110031");
+    assert!(!r.has_category(PiiCategory::CreditCard), "{r:?}");
 }
 
 #[test]
@@ -467,10 +466,11 @@ fn complete_card_validator_accepts_pan_or_pan_with_cvv_group() {
     assert!(is_complete_card("4111 1111 1111 1111 003"));
     // Luhn-invalid PAN with a CVV-shaped tail.
     assert!(!is_complete_card("1234 5678 9012 3456 123"));
-    // Tail that is not a CVV group: too short, too long, or ungrouped.
-    assert!(!is_complete_card("4111 1111 1111 1111 12"));
-    assert!(!is_complete_card("4111 1111 1111 1111 12345"));
-    assert!(!is_complete_card("4111 1111 1111 1111 003-1"));
+    // A complete PAN followed by more digits: the run starts with a card.
+    assert!(is_complete_card("4111 1111 1111 1111 12"));
+    assert!(is_complete_card("4111 1111 1111 1111 12345"));
+    assert!(is_complete_card("4111 1111 1111 1111 003-1"));
+    // No separator, so no head to try, and 20 digits is not a PAN.
     assert!(!is_complete_card("41111111111111110031"));
 }
 
@@ -524,15 +524,16 @@ fn redact_identifiers_replaces_the_whole_card_span() {
 }
 
 #[test]
-fn redact_identifiers_leaves_an_overlong_card_candidate_whole() {
-    // Neither a partial replacement of a Luhn-valid head nor any other
-    // change: the run is not a card, so it is left exactly as written.
+fn redact_identifiers_replaces_a_run_that_starts_with_a_card_whole() {
+    // The valid PAN at the head is not left in place: the whole run goes.
     for text in [
         "ref 4111 1111 1111 1111 003-1 noted",
         "ref 4111 1111 1111 1111 1111 1111 noted",
     ] {
-        assert_eq!(redact_identifiers(text), text);
+        assert_eq!(redact_identifiers(text), "ref [redacted] noted", "{text:?}");
     }
+    let text = "ref 41111111111111110031 noted";
+    assert_eq!(redact_identifiers(text), text);
 }
 
 #[test]
