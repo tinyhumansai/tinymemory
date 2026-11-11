@@ -559,6 +559,42 @@ fn complete_card_validator_accepts_pan_or_pan_with_cvv_group() {
     assert!(is_complete_card("4111 1111 1111 1111 003-1"));
     // No separator, so no head to try, and 20 digits is not a PAN.
     assert!(!is_complete_card("41111111111111110031"));
+    // A valid PAN after another number on the same run is still found.
+    assert!(is_complete_card("1234567890123456 4111 1111 1111 1111"));
+    assert!(is_complete_card("1234 5678 9012 3456 4111 1111 1111 1111"));
+    // A group of non-ASCII digits is skipped without panicking.
+    assert!(is_complete_card(
+        "\u{661}\u{662}\u{663}\u{664} 4111 1111 1111 1111"
+    ));
+}
+
+#[test]
+fn a_card_after_another_number_on_the_same_run_is_found_and_redacted() {
+    for (text, redacted) in [
+        (
+            "invoice 1234567890123456 4111 1111 1111 1111",
+            "invoice [redacted]",
+        ),
+        (
+            "ids 1234 5678 9012 3456 4111 1111 1111 1111 end",
+            "ids [redacted] end",
+        ),
+    ] {
+        let r = scan(text);
+        assert!(
+            r.has_category(PiiCategory::CreditCard),
+            "missed in {text:?}"
+        );
+        assert_eq!(redact_identifiers(text), redacted, "{text:?}");
+    }
+}
+
+#[test]
+fn a_long_separated_digit_run_is_judged_in_linear_work() {
+    // Every group start is tried, but each stops past 19 digits, so a long run
+    // of single-digit groups is cheap and is not a card.
+    let run = "1 ".repeat(20_000);
+    assert!(!is_complete_card(run.trim_end()));
 }
 
 #[test]
