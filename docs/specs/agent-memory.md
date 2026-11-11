@@ -152,7 +152,9 @@ skipped, engine }`.
 - **Exclusions:**
   - `exclude_ids` drops named items, such as the turn just logged.
   - `exclude_thread { thread_id, from_turn }` drops the turns still in the
-    prompt.
+    prompt. The same `ThreadWindow` rides on `RecallRequest` and
+    `FetchRequest` (`tinymemory-api`), so an answer section's recall leaves
+    the window out at the engine and a host's own reads can too.
 - **Dates.** A conversation bullet whose turn carries a time
   (`meta.observed_at`, set from `PreTurn::at` and `PostTurn::at`) is led by
   it, `[YYYY-MM-DD HH:MM]`. Hosts should pass the time the message was sent:

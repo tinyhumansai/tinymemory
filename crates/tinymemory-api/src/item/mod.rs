@@ -262,7 +262,8 @@ impl StoreItem {
     }
 
     /// A stable hex digest of the whole item, metadata included, except
-    /// `meta.observed_at`, `meta.observed_actor` and `meta.tool_call.id`.
+    /// `meta.observed_at`, `meta.observed_actor`, `meta.tool_call.id`, and a
+    /// conversation's `meta.channel`.
     ///
     /// Two items with the same fingerprint are the same item: an engine
     /// derives its idempotency from this, so an identical retry is a replay.
@@ -274,6 +275,23 @@ impl StoreItem {
     /// item once attribution is turned on.
     #[must_use]
     pub fn fingerprint(&self) -> String {
+        self.fingerprint_with_channel(false)
+    }
+
+    /// The former conversation fingerprint, which included its channel.
+    ///
+    /// Engines use this only to find items persisted before conversation
+    /// fingerprints became channel-neutral. New writes must use
+    /// [`Self::fingerprint`]. Returns `None` unless this is a conversation
+    /// with a channel.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn legacy_conversation_fingerprint(&self) -> Option<String> {
+        matches!(self, Self::Conversation { meta, .. } if meta.channel.is_some())
+            .then(|| self.fingerprint_with_channel(true))
+    }
+
+    fn fingerprint_with_channel(&self, include_channel: bool) -> String {
         let mut identity = self.clone();
         identity.meta_mut().observed_at = None;
         identity.meta_mut().observed_actor = None;
@@ -282,6 +300,12 @@ impl StoreItem {
         // replay the same item even when the model issues a new tool call.
         if let Some(call) = identity.meta_mut().tool_call.as_mut() {
             call.id = None;
+        }
+        // Channel identifies where a conversation turn was observed, not the
+        // thread/turn itself. Adding a channel to an existing log must not
+        // create a second copy of the same turn.
+        if !include_channel && let Self::Conversation { meta, .. } = &mut identity {
+            meta.channel = None;
         }
         // Serialising a struct cannot fail: every field is a plain string,
         // number, enum or timestamp. The fallback keeps the function total.

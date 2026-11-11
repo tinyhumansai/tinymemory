@@ -49,14 +49,15 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use tinymemory_api::{
-    ConsolidateRequest, FetchMode, FetchRequest, ForgetReport, ForgetTarget, Hit, ItemKind,
-    MAX_STORE_MANY, MemoryEngine, Reach, Result, StoreItem, WriteOptions,
+    ConsolidateRequest, ExploreRequest, Facet, FetchMode, FetchRequest, ForgetReport, ForgetTarget,
+    Hit, ItemKind, MAX_STORE_MANY, MemoryEngine, Reach, Result, SegmentKind, StoreItem,
+    WriteOptions,
 };
 
 use crate::background::{BackgroundJob, builds_on_its_own};
 use crate::layout::{BrainSource, MemoryLayout};
 
-pub use types::{BrainBatch, BrainDocument, Ingested};
+pub use types::{BrainBatch, BrainDocument, BrainSourceCount, BrainSourcesView, Ingested};
 
 /// The brain over one engine and layout. Cheap to clone.
 #[derive(Clone)]
@@ -85,6 +86,53 @@ impl Brain {
     #[must_use]
     pub fn layout(&self) -> &MemoryLayout {
         &self.layout
+    }
+
+    /// Counts documents by source in this brain layout.
+    ///
+    /// Source collections such as GitHub projects are included in their
+    /// parent's count. Documents without a source segment at the layout's
+    /// source depth, and documents missing from the namespace facet, are
+    /// reported as unfiled. Exploration uses the host-compatible bounds of
+    /// 200 namespace buckets and 20,000 scanned items, so a truncated engine
+    /// result is a lower bound.
+    ///
+    /// # Errors
+    ///
+    /// The engine's errors while exploring the layout.
+    pub async fn sources(&self) -> Result<BrainSourcesView> {
+        let page = self
+            .engine
+            .explore(ExploreRequest {
+                facet: Facet::Namespace,
+                filter: self.layout.brain_filter(None),
+                limit: 200,
+                scan_limit: 20_000,
+            })
+            .await?;
+        let source_of = |node: &str| -> Option<String> {
+            let node: tinymemory_api::Namespace = node.parse().ok()?;
+            let segment = node.segments().get(self.layout.root().depth())?;
+            (segment.kind() == SegmentKind::Source).then(|| segment.id().to_string())
+        };
+        let mut counts = std::collections::BTreeMap::<String, u64>::new();
+        let mut unfiled = page.missing;
+        for bucket in page.buckets {
+            match source_of(&bucket.value) {
+                Some(source) => *counts.entry(source).or_default() += bucket.count,
+                None => unfiled += bucket.count,
+            }
+        }
+        let mut sources: Vec<BrainSourceCount> = counts
+            .into_iter()
+            .map(|(source, documents)| BrainSourceCount { source, documents })
+            .collect();
+        sources.sort_by(|a, b| b.documents.cmp(&a.documents).then(a.source.cmp(&b.source)));
+        Ok(BrainSourcesView {
+            root: self.layout.root().to_string(),
+            sources,
+            unfiled,
+        })
     }
 
     /// Stores one document at its source's node, returning once it is

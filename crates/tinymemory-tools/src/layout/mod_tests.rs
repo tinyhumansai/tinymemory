@@ -163,7 +163,7 @@ fn a_core_scope_reads_its_node_exactly() {
 
 #[test]
 fn pooled_conversations_share_one_node_told_apart_by_agent() {
-    let chats: Namespace = "ws:main".parse().unwrap();
+    let chats: Namespace = "team:acme/ws:main".parse().unwrap();
     let layout = MemoryLayout::new("team:acme".parse().unwrap())
         .unwrap()
         .with_pooled_conversations(&chats)
@@ -189,20 +189,39 @@ fn pooled_conversations_share_one_node_told_apart_by_agent() {
 }
 
 #[test]
+fn pooled_conversations_accept_the_absolute_node_below_a_non_root_layout() {
+    let root: Namespace = "team:acme".parse().unwrap();
+    let node: Namespace = "team:acme/ws:main".parse().unwrap();
+    let layout = MemoryLayout::new(root).unwrap();
+
+    let pooled = layout.with_pooled_conversations(&node).unwrap();
+
+    assert_eq!(pooled.conversations("coder").unwrap(), node);
+}
+
+#[test]
 fn pooled_conversations_need_a_node_that_fits() {
     let layout = MemoryLayout::default();
     assert!(matches!(
         layout.clone().with_pooled_conversations(&Namespace::ROOT),
         Err(Error::InvalidRequest(_))
     ));
-    let deep: Namespace = ["agent:a"; 7].join("/").parse().unwrap();
-    let two: Namespace = "ws:a/ws:b".parse().unwrap();
+    let scoped = MemoryLayout::new("team:acme".parse().unwrap()).unwrap();
     assert!(
-        MemoryLayout::new(deep)
-            .unwrap()
-            .with_pooled_conversations(&two)
+        scoped
+            .clone()
+            .with_pooled_conversations(&Namespace::ROOT)
             .is_err()
     );
+    for invalid in ["team:acme", "team:other/ws:main", "team:acme2/ws:main"] {
+        assert!(
+            scoped
+                .clone()
+                .with_pooled_conversations(&invalid.parse().unwrap())
+                .is_err(),
+            "expected {invalid:?} to be outside a strict descendant of team:acme"
+        );
+    }
 }
 
 #[test]

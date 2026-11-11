@@ -142,30 +142,9 @@ impl ScopeSection {
     }
 }
 
-/// Part of a conversation thread a pack leaves out because the host's prompt
-/// already holds it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ThreadWindow {
-    /// The thread.
-    pub thread_id: String,
-    /// The first turn index still in the prompt; turns from here on are
-    /// left out.
-    #[serde(default)]
-    pub from_turn: u32,
-}
-
-impl ThreadWindow {
-    /// Whether `hit` lies inside the window.
-    #[must_use]
-    pub fn covers(&self, hit: &Hit) -> bool {
-        hit.meta.thread_id.as_deref() == Some(self.thread_id.as_str())
-            && hit
-                .meta
-                .turns
-                .as_ref()
-                .is_none_or(|turns| turns.last >= self.from_turn)
-    }
-}
+/// The turns a recall leaves out; defined beside the read requests that
+/// also carry it ([`tinymemory_api::RecallRequest::exclude_thread`]).
+pub use tinymemory_api::ThreadWindow;
 
 /// A recall across several scopes at once, rendered into one budgeted
 /// markdown block: the single read every lifecycle step is built from.
@@ -257,11 +236,21 @@ pub struct SectionHits {
 
 /// A section that contributed nothing, and why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "error", rename_all = "snake_case")]
+pub enum SkipReason {
+    /// The section read succeeded but returned no hits.
+    Empty,
+    /// The engine refused or failed the section read.
+    Engine(Error),
+}
+
+/// A section that contributed nothing, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SkippedSection {
     /// The section's heading.
     pub heading: String,
-    /// Why: `empty`, or the engine's error.
-    pub reason: String,
+    /// Typed reason, retaining the engine error category and cause.
+    pub reason: SkipReason,
 }
 
 /// A rendered holistic recall.

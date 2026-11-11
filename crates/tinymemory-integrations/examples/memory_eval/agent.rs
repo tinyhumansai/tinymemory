@@ -20,6 +20,7 @@ use std::time::{Duration as StdDuration, Instant};
 
 use chrono::{DateTime, Duration, Utc};
 use tinymemory_api::{Error, ToolCallRef};
+use tinymemory_tools::lifecycle::turn::{LoggedToolCall, logged_reply};
 use tinymemory_tools::{AgentMemory, BackgroundJob, PostTurn, PreTurn, TurnContext};
 
 /// OpenHuman's default deadline for the pack before a model turn.
@@ -55,8 +56,6 @@ impl HostHook {
     }
 }
 /// OpenHuman's maximum length of one logged tool result.
-const MAX_TOOL_LINE_CHARS: usize = 240;
-
 /// A scripted tool call and the result the "tool" returns.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ToolStep {
@@ -229,13 +228,7 @@ impl ScriptedAgent {
             markdown.to_string()
         };
         let answer = reply(&prompt, text, if self.openhuman { &[] } else { tools });
-        let reply = if self.openhuman {
-            logged_reply(&answer, tools)
-        } else {
-            answer
-        };
-        let mut post = PostTurn::new(&self.thread, self.next + 1, reply);
-        post.tool_calls = tools
+        let tool_calls: Vec<ToolCallRef> = tools
             .iter()
             .enumerate()
             .map(|(index, step)| ToolCallRef {
@@ -243,6 +236,21 @@ impl ScriptedAgent {
                 id: Some(format!("{}-{}-{index}", self.thread, self.next)),
             })
             .collect();
+        let logged_calls: Vec<LoggedToolCall> = tools
+            .iter()
+            .zip(&tool_calls)
+            .map(|(step, call)| LoggedToolCall {
+                call: call.clone(),
+                result: Some(step.result.to_string()),
+            })
+            .collect();
+        let reply = if self.openhuman {
+            logged_reply(&answer, &logged_calls)
+        } else {
+            answer
+        };
+        let mut post = PostTurn::new(&self.thread, self.next + 1, reply);
+        post.tool_calls = tool_calls;
         post.at = self.tick();
         let started = Instant::now();
         let report = self.memory.post_turn(post).await?;
@@ -278,28 +286,6 @@ fn reply(markdown: &str, text: &str, tools: &[ToolStep]) -> String {
         lines.push("Noted.".to_string());
     }
     lines.join("\n")
-}
-
-/// The reply OpenHuman stores: the model's text and bounded tool-result lines.
-fn logged_reply(text: &str, tools: &[ToolStep]) -> String {
-    let lines: Vec<String> = tools
-        .iter()
-        .filter_map(|step| {
-            let result = step.result.split_whitespace().collect::<Vec<_>>().join(" ");
-            (!result.is_empty()).then(|| {
-                format!(
-                    "- {} → {}",
-                    step.name,
-                    result.chars().take(MAX_TOOL_LINE_CHARS).collect::<String>()
-                )
-            })
-        })
-        .collect();
-    if lines.is_empty() {
-        text.trim().to_string()
-    } else {
-        format!("{}\n\nTools:\n{}", text.trim(), lines.join("\n"))
-    }
 }
 
 /// The agent's reply when nothing in the pack answers.

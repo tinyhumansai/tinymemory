@@ -20,8 +20,8 @@ use crate::{
     Citation, ConsolidateReceipt, ConsolidateRequest, ConsolidateStatus, Consolidation,
     EngineDescriptor, EngineHealth, EraseReport, EraseRequest, Error, ExportPage, Exported,
     FetchMode, FetchPage, FetchRequest, ForgetReport, ForgetTarget, Hit, ItemId, ListPage,
-    ListRequest, MemoryEngine, MetaFilter, Reach, RecallAnswer, RecallRequest, Result, StoreItem,
-    StoreReceipt,
+    ListRequest, MemoryEngine, MetaFilter, Reach, RecallAnswer, RecallMode, RecallRequest, Result,
+    StoreItem, StoreReceipt,
 };
 use async_trait::async_trait;
 
@@ -159,7 +159,10 @@ impl MemoryEngine for ReferenceEngine {
 
     async fn recall(&self, req: RecallRequest) -> Result<RecallAnswer> {
         req.validate()?;
-        let hits = self.ranked(&req.question, FetchMode::Hybrid, &req.filter)?;
+        let mut hits = self.ranked(&req.question, FetchMode::Hybrid, &req.filter)?;
+        if let Some(window) = &req.exclude_thread {
+            hits.retain(|hit| !window.excludes(hit.kind, &hit.meta));
+        }
         let citations: Vec<Citation> = hits
             .into_iter()
             .take(req.limit)
@@ -171,6 +174,17 @@ impl MemoryEngine for ReferenceEngine {
                 score: Some(hit.score),
             })
             .collect();
+        if req.mode == RecallMode::Evidence {
+            let lines: Vec<String> = citations
+                .iter()
+                .map(|c| format!("- {}", c.snippet))
+                .collect();
+            return Ok(RecallAnswer {
+                answer: lines.join("\n"),
+                citations,
+                model: None,
+            });
+        }
         let answer = if citations.is_empty() {
             "Nothing stored answers this question.".to_string()
         } else {
@@ -192,6 +206,9 @@ impl MemoryEngine for ReferenceEngine {
         self.descriptor.ensure_mode(req.mode)?;
         req.validate()?;
         let mut hits = self.ranked(&req.query, req.mode, &req.filter)?;
+        if let Some(window) = &req.exclude_thread {
+            hits.retain(|hit| !window.excludes(hit.kind, &hit.meta));
+        }
         if let Some(hint) = &req.refers_to {
             hint.rank(&mut hits);
         }

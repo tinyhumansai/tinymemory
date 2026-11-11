@@ -1,5 +1,7 @@
-//! Recall: one recall pack per scope, then the answer route once with one
-//! of them.
+//! Recall: a broad recall pack per scope, plus a channel-specific supplement
+//! when requested, then the answer route once with one real pack id. In
+//! [`tinymemory_api::RecallMode::Evidence`] those packs are rendered as
+//! evidence instead and the answer route is never asked (see `evidence`).
 //!
 //! The scopes are the filter's (see `scopes`): the kind scopes of its reach,
 //! or, with no reach (an unscoped, administrative read), every kind scope the
@@ -22,28 +24,34 @@
 //! `subtree` lane (experimental and off by default in 0.10.4).
 //!
 //! Citations come from the packs' `layers.events`, decoded back to items,
-//! filtered by the full [`tinymemory_api::MetaFilter`] (reach included), and
+//! filtered by the full [`tinymemory_api::MetaFilter`] (reach included) and
+//! [`tinymemory_api::RecallRequest::exclude_thread`], and
 //! merged rank by rank across the packs (each pack's best, the most specific
 //! node's first, then each pack's second, …), one per item, at most `limit`.
 //! CortexDB scores none of them. A pack with no decodable events still
 //! returns the engine's answer, with no citations.
+//!
+//! **An excluded thread leaves the citations, not the answer text.** CortexDB
+//! narrows a recall only by label, so `exclude_thread` is applied to the
+//! decoded events; the server writes the answer from the whole pack, which
+//! may still hold the excluded turns.
 
 use std::collections::HashSet;
 
 use futures::{StreamExt, TryStreamExt, stream};
 use serde_json::{Value, json};
-use tinymemory_api::{Citation, ItemId, Namespace, Reach, RecallAnswer, RecallRequest};
+use tinymemory_api::{Citation, ItemId, Namespace, Reach, RecallAnswer, RecallMode, RecallRequest};
 
 use super::CortexEngine;
-use super::fetch::{interleave, ranked, recall_body, whole_items_budget};
+use super::fetch::{interleave, ranked, recall_bodies, whole_items_budget};
 use super::items::{admitted, located_meta};
 use super::scopes::KindScope;
 use crate::cortex::descriptor::CortexWire;
 use crate::cortex::envelope::Envelope;
 use crate::cortex::error::{Error, Result};
 
-/// Recall packs built at once when a reach spans several scopes.
-const PACKS_AT_ONCE: usize = 4;
+/// Recall pack requests in flight when a reach spans several scopes.
+pub(super) const PACKS_AT_ONCE: usize = 4;
 
 /// Rounds (packs, then one answer) at most per recall: the first, and one
 /// after each time CortexDB dropped the packs before the answer used one.
@@ -105,7 +113,9 @@ pub(super) fn answer_body(
     });
     match (wire, instructions) {
         (_, Some(text)) => body["answer_instructions"] = json!(text),
-        (CortexWire::Direct, None) => body["answer_instructions"] = Value::Null,
+        (CortexWire::Direct | CortexWire::Proxied, None) => {
+            body["answer_instructions"] = Value::Null;
+        }
         (CortexWire::TinyHumans, None) => {}
     }
     body
@@ -133,6 +143,9 @@ impl CortexEngine {
         let mut ordered: Vec<&KindScope> = scopes.iter().collect();
         ordered.sort_by_key(|scope| std::cmp::Reverse(scope.namespace.depth()));
         let paths: Vec<String> = ordered.into_iter().map(|s| s.path.clone()).collect();
+        if req.mode == RecallMode::Evidence {
+            return self.recall_evidence(&req, &paths).await;
+        }
         // A pack lives 60 s, and CortexDB drops every pack it holds once
         // anything is forgotten (measured on 0.10.4: a forget in another
         // scope turns the next `use_pack_id` into a 404). On a 404 every
@@ -177,8 +190,9 @@ impl CortexEngine {
 }
 
 impl CortexEngine {
-    /// One round of recall: a pack per path (four at a time), decoded and
-    /// filtered, and the answer route asked once with the pack holding the
+    /// One round of recall: a broad pack and optional channel supplement per
+    /// path (four requests at a time), decoded and filtered, and the answer
+    /// route asked once with the real pack holding the
     /// most admitted events, the most specific node on a tie. The answer's
     /// own error is handed back, so the caller can tell a dropped pack.
     async fn answer_round(
@@ -186,17 +200,18 @@ impl CortexEngine {
         req: &RecallRequest,
         paths: &[String],
     ) -> Result<(Vec<Vec<Envelope>>, Result<Value>)> {
-        let packs: Vec<(String, Value)> = stream::iter(paths.to_vec())
+        let grouped: Vec<Vec<(String, Value)>> = stream::iter(paths.to_vec())
             .map(|path| async move {
-                let pack = self.pack(req, &path).await?;
-                Ok::<_, Error>((path, pack))
+                let packs = self.packs(req, &path).await?;
+                Ok::<_, Error>(packs.into_iter().map(|pack| (path.clone(), pack)).collect())
             })
             .buffered(PACKS_AT_ONCE)
             .try_collect()
             .await?;
+        let packs: Vec<(String, Value)> = grouped.into_iter().flatten().collect();
         let per_pack: Vec<Vec<Envelope>> = packs
             .iter()
-            .map(|(_, pack)| ranked(pack, None, &req.filter))
+            .map(|(_, pack)| ranked(pack, None, &req.filter, req.exclude_thread.as_ref()))
             .collect();
         let chosen = per_pack
             .iter()
@@ -214,15 +229,30 @@ impl CortexEngine {
         Ok((per_pack, self.log.answer(&body).await))
     }
 
-    /// A recall pack for `req` over exactly `scope`, sized for `req.limit`
-    /// citations. It includes the derived layers the answer route reads,
-    /// after the events the citations come from.
-    async fn pack(&self, req: &RecallRequest, scope: &str) -> Result<Value> {
-        let mut body = recall_body(scope, &req.question, 0, &req.filter);
-        body["include"] = pack_layers();
-        body["budgets"]["per_layer_limits"] = pack_budgets(req.limit);
-        body["budgets"]["max_tokens"] = json!(whole_items_budget(req.limit.saturating_mul(3)));
-        self.log.recall(&body).await
+    /// Broad legacy pack plus a targeted channel pack, each with a real
+    /// server-issued id. The broad pack preserves records written before
+    /// channel labels existed.
+    pub(super) async fn packs(&self, req: &RecallRequest, scope: &str) -> Result<Vec<Value>> {
+        let bodies = self.pack_bodies(req, scope);
+        let mut packs = Vec::with_capacity(bodies.len());
+        for body in bodies {
+            packs.push(self.log.recall(&body).await?);
+        }
+        Ok(packs)
+    }
+
+    /// Request bodies for a scope's broad pack and optional channel supplement.
+    pub(super) fn pack_bodies(&self, req: &RecallRequest, scope: &str) -> Vec<Value> {
+        recall_bodies(scope, &req.question, 0, &req.filter)
+            .into_iter()
+            .map(|mut body| {
+                body["include"] = pack_layers();
+                body["budgets"]["per_layer_limits"] = pack_budgets(req.limit);
+                body["budgets"]["max_tokens"] =
+                    json!(whole_items_budget(req.limit.saturating_mul(3)));
+                body
+            })
+            .collect()
     }
 }
 

@@ -389,3 +389,42 @@ fn validate_rejects_an_id_with_a_colon_or_control_character() {
         assert!(entry.validate().is_err(), "{id:?} must be rejected");
     }
 }
+
+#[test]
+fn host_source_config_keeps_its_persisted_wire_defaults() {
+    let config: MemorySourceConfig = serde_json::from_value(serde_json::json!({
+        "id": "src-1",
+        "kind": "github",
+        "target": "https://github.com/acme/repo"
+    }))
+    .unwrap();
+    assert_eq!(config.kind, MemorySourceKind::Github);
+    assert_eq!(config.label, "");
+    assert_eq!(config.schedule_mins, None);
+    assert_eq!(config.namespace, None);
+    assert_eq!(
+        serde_json::to_value(config).unwrap(),
+        serde_json::json!({
+            "id": "src-1",
+            "kind": "github",
+            "target": "https://github.com/acme/repo",
+            "label": ""
+        })
+    );
+}
+
+#[test]
+fn memory_source_kind_parses_the_host_wire_names_case_insensitively() {
+    for kind in MemorySourceKind::ALL {
+        assert_eq!(MemorySourceKind::parse(kind.as_str()), Some(kind));
+        assert_eq!(
+            serde_json::from_str::<MemorySourceKind>(&format!("\"{}\"", kind.as_str())).unwrap(),
+            kind
+        );
+    }
+    assert_eq!(
+        MemorySourceKind::parse(" FOLDER "),
+        Some(MemorySourceKind::Folder)
+    );
+    assert_eq!(MemorySourceKind::parse("composio"), None);
+}

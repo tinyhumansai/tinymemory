@@ -27,6 +27,8 @@ Architecture overview:
 | `migrate(engine, workspace, from)` | Copies every item after `from` into a `MemoryEngine`, in `store_many` batches; returns a `MigrationReport`. |
 | `migrate_with(engine, workspace, from, on_batch)` | `migrate`, calling `on_batch(&Checkpoint)` after each stored batch so the host can persist it. |
 | `MigrationReport { stored, replayed, batches, checkpoint }` | What a run did, and where to resume. |
+| `Importer::resume_plan(file, billing_ok, paused)` | Pure decision for whether a background tick resumes an import, resumes a failed-item retry, or waits. |
+| `record_resume_failure(store, error)` | Persists an automatic resume failure using only the host checkpoint store; no engine or pacer is needed. |
 | `Error` / `Result` | `NotFound`, `NotLegacy`, `Sqlite`, `Io`, `Json`, `Engine { source, checkpoint }`; `Error::checkpoint()` reads the resume point. |
 
 ## Detection
@@ -296,3 +298,16 @@ let report = migrate_with(engine.as_ref(), workspace, from, |checkpoint| {
 - The workspace is taken by value: its SQLite handle is not `Sync`, and owning
   it keeps the returned future `Send`, so a long import can run on a spawned
   task.
+
+## Resumable driver: `Importer`
+
+`Importer` runs the copy as a product does: progress and the resume
+`Checkpoint` persist through a host `CheckpointStore` (an `ImportFile`, in the
+JSON shape the product has always written), transient engine failures retry
+with a `RetryPolicy` slept through the host's `Pacer`, items the engine
+refuses are skipped and kept in `ImportFile::failed` for `begin_retry`, and
+account-wide failures (credits, sign-in, unreachable engine) stop the run
+without advancing the checkpoint past anything unstored. Consent and the
+pause check are host callbacks. `begin`/`begin_retry` mark the run `Running`
+(blocking, they read SQLite); `run`/`run_retry` drive it. The host owns which
+runs are live, the state file's location and what follows a finished import.

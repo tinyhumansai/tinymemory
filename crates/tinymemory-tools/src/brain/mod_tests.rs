@@ -1,9 +1,13 @@
 //! Brain ingestion, search, forgetting and the belief builds it hands back.
 
+use async_trait::async_trait;
+use std::sync::Mutex;
 use tinymemory_api::conformance::ReferenceEngine;
 use tinymemory_api::{
-    ConsolidateRequest, Consolidation, Error, ListRequest, MemoryMeta, Namespace, SourceKind,
-    SourceRef,
+    ConsolidateRequest, Consolidation, EngineDescriptor, EngineHealth, Error, ExplorePage,
+    ExploreRequest, Facet, FacetBucket, FetchPage, FetchRequest, ForgetReport, ForgetTarget,
+    ListPage, ListRequest, MemoryMeta, Namespace, RecallAnswer, RecallRequest, SourceKind,
+    SourceRef, StoreItem, StoreReceipt,
 };
 
 use super::*;
@@ -11,6 +15,157 @@ use super::*;
 fn brain() -> (Arc<ReferenceEngine>, Brain) {
     let engine = Arc::new(ReferenceEngine::new());
     (engine.clone(), Brain::new(engine, MemoryLayout::default()))
+}
+
+async fn store_document_at(engine: &ReferenceEngine, namespace: &str, text: &str) {
+    engine
+        .store(StoreItem::document(
+            text,
+            MemoryMeta {
+                namespace: namespace.parse().unwrap(),
+                ..MemoryMeta::default()
+            },
+        ))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn sources_fold_collections_sort_ties_and_count_unfiled_below_the_root() {
+    let engine = Arc::new(ReferenceEngine::new());
+    let layout = MemoryLayout::new("team:acme".parse().unwrap()).unwrap();
+    let brain = Brain::new(engine.clone(), layout);
+    for (namespace, text) in [
+        ("team:acme/source:github", "github root"),
+        (
+            "team:acme/source:github/project:acme-api",
+            "github collection",
+        ),
+        ("team:acme/source:notion", "notion"),
+        ("team:acme/source:pdf", "pdf"),
+        ("team:acme", "root item"),
+        ("team:acme/agent:writer", "agent item"),
+        ("team:acme/ws:main/source:wrong-depth", "wrong depth"),
+        ("team:else/source:outside", "outside layout"),
+    ] {
+        store_document_at(&engine, namespace, text).await;
+    }
+
+    let view = brain.sources().await.unwrap();
+    assert_eq!(view.root, "team:acme");
+    assert_eq!(
+        view.sources,
+        [
+            BrainSourceCount {
+                source: "github".into(),
+                documents: 2,
+            },
+            BrainSourceCount {
+                source: "notion".into(),
+                documents: 1,
+            },
+            BrainSourceCount {
+                source: "pdf".into(),
+                documents: 1,
+            },
+        ]
+    );
+    assert_eq!(view.unfiled, 3);
+    assert_eq!(
+        serde_json::to_value(view).unwrap(),
+        serde_json::json!({
+            "root": "team:acme",
+            "sources": [
+                { "source": "github", "documents": 2 },
+                { "source": "notion", "documents": 1 },
+                { "source": "pdf", "documents": 1 }
+            ],
+            "unfiled": 3
+        })
+    );
+}
+
+struct ExploreFixture {
+    inner: ReferenceEngine,
+    requests: Mutex<Vec<ExploreRequest>>,
+}
+
+#[async_trait]
+impl tinymemory_api::MemoryEngine for ExploreFixture {
+    fn descriptor(&self) -> &EngineDescriptor {
+        self.inner.descriptor()
+    }
+    async fn health(&self) -> EngineHealth {
+        self.inner.health().await
+    }
+    async fn recall(&self, request: RecallRequest) -> tinymemory_api::Result<RecallAnswer> {
+        self.inner.recall(request).await
+    }
+    async fn fetch(&self, request: FetchRequest) -> tinymemory_api::Result<FetchPage> {
+        self.inner.fetch(request).await
+    }
+    async fn store(&self, item: StoreItem) -> tinymemory_api::Result<StoreReceipt> {
+        self.inner.store(item).await
+    }
+    async fn forget(&self, target: ForgetTarget) -> tinymemory_api::Result<ForgetReport> {
+        self.inner.forget(target).await
+    }
+    async fn list(&self, request: ListRequest) -> tinymemory_api::Result<ListPage> {
+        self.inner.list(request).await
+    }
+    async fn explore(&self, request: ExploreRequest) -> tinymemory_api::Result<ExplorePage> {
+        self.requests.lock().unwrap().push(request);
+        Ok(ExplorePage {
+            facet: Facet::Namespace,
+            buckets: vec![
+                FacetBucket {
+                    value: "root".into(),
+                    count: 1,
+                },
+                FacetBucket {
+                    value: "source:files".into(),
+                    count: 3,
+                },
+                FacetBucket {
+                    value: "malformed".into(),
+                    count: 2,
+                },
+            ],
+            total: 8,
+            missing: 2,
+            more_buckets: 0,
+            truncated: false,
+        })
+    }
+}
+
+#[tokio::test]
+async fn sources_include_missing_facet_items_and_keep_the_bounded_host_query() {
+    let engine = Arc::new(ExploreFixture {
+        inner: ReferenceEngine::new(),
+        requests: Mutex::new(Vec::new()),
+    });
+    let brain = Brain::new(engine.clone(), MemoryLayout::default());
+    let view = brain.sources().await.unwrap();
+
+    assert_eq!(
+        view.unfiled, 5,
+        "root and malformed buckets plus missing facet"
+    );
+    assert_eq!(
+        view.sources,
+        [BrainSourceCount {
+            source: "files".into(),
+            documents: 3,
+        }]
+    );
+    let requests = engine.requests.lock().unwrap();
+    let request = &requests[0];
+    assert_eq!(request.facet, Facet::Namespace);
+    assert_eq!(request.filter.kinds, [tinymemory_api::ItemKind::Document]);
+    assert_eq!(request.filter.reach, Some(Reach::subtree(Namespace::ROOT)));
+    assert_eq!(request.limit, 200);
+    assert_eq!(request.scan_limit, 20_000);
 }
 
 #[tokio::test]

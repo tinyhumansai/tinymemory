@@ -50,6 +50,9 @@ pub struct MetaFilter {
     /// Exact thread id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
+    /// Exact channel.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
     /// Exact turn range.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turns: Option<TurnRange>,
@@ -80,6 +83,15 @@ pub struct MetaFilter {
 }
 
 impl MetaFilter {
+    /// A filter restricted to items carrying any of the given tags.
+    #[must_use]
+    pub fn tags_any(tags: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            tags_any: tags.into_iter().map(Into::into).collect(),
+            ..Self::default()
+        }
+    }
+
     /// A filter restricted to the given item kinds.
     #[must_use]
     pub fn kinds(kinds: impl IntoIterator<Item = ItemKind>) -> Self {
@@ -120,6 +132,7 @@ impl MetaFilter {
             && exact(self.commit.as_deref(), meta.commit.as_deref())
             && exact(self.url.as_deref(), meta.url.as_deref())
             && exact(self.thread_id.as_deref(), meta.thread_id.as_deref())
+            && exact(self.channel.as_deref(), meta.channel.as_deref())
             && self.turns.is_none_or(|turns| meta.turns == Some(turns))
             && exact(self.agent_id.as_deref(), meta.agent_id.as_deref())
             && exact(

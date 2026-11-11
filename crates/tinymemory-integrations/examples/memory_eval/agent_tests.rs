@@ -10,6 +10,9 @@ use std::sync::Arc;
 use tinymemory_api::conformance::ReferenceEngine;
 use tinymemory_api::{LearningKind, ListRequest, MemoryEngine, MemoryMeta, StoreItem};
 use tinymemory_tools::MemoryLayout;
+use tinymemory_tools::lifecycle::turn::{
+    LoggedToolCall, MAX_TOOL_LINE_CHARS, logged_reply as shared_logged_reply,
+};
 
 #[test]
 fn openhuman_defaults_to_plain_recall_and_resumes_after_compaction() {
@@ -22,26 +25,35 @@ fn openhuman_defaults_to_plain_recall_and_resumes_after_compaction() {
 #[test]
 fn logged_reply_keeps_bounded_tool_results() {
     let long = "a".repeat(MAX_TOOL_LINE_CHARS + 20);
-    let result = logged_reply(
+    let result = shared_logged_reply(
         " Done. ",
         &[
-            ToolStep {
-                name: "read",
-                result: "file  contents\n  changed",
+            LoggedToolCall {
+                call: tinymemory_api::ToolCallRef {
+                    name: "read".into(),
+                    id: None,
+                },
+                result: Some("file  contents\n  changed".into()),
             },
-            ToolStep {
-                name: "empty",
-                result: "  ",
+            LoggedToolCall {
+                call: tinymemory_api::ToolCallRef {
+                    name: "empty".into(),
+                    id: None,
+                },
+                result: Some("  ".into()),
             },
         ],
     );
     assert_eq!(result, "Done.\n\nTools:\n- read → file contents changed");
     assert_eq!(
-        logged_reply(
+        shared_logged_reply(
             "Done.",
-            &[ToolStep {
-                name: "read",
-                result: Box::leak(long.into_boxed_str())
+            &[LoggedToolCall {
+                call: tinymemory_api::ToolCallRef {
+                    name: "read".into(),
+                    id: None,
+                },
+                result: Some(long),
             }]
         )
         .lines()

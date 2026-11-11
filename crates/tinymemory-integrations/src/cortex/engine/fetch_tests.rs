@@ -25,7 +25,12 @@ fn a_pack_ranks_each_item_once_at_its_best_position_and_filters() {
         event("e2", &b),
         event("e3", &a),
     ] } });
-    let all = ranked(&pack, Some(ItemKind::Document), &MetaFilter::default());
+    let all = ranked(
+        &pack,
+        Some(ItemKind::Document),
+        &MetaFilter::default(),
+        None,
+    );
     let ids: Vec<_> = all.iter().map(|e| e.id.clone()).collect();
     assert_eq!(ids, vec![a.fingerprint(), b.fingerprint()]);
 
@@ -33,10 +38,18 @@ fn a_pack_ranks_each_item_once_at_its_best_position_and_filters() {
         repo: Some("o/b".into()),
         ..MetaFilter::default()
     };
-    let filtered = ranked(&pack, Some(ItemKind::Document), &only_b);
+    let filtered = ranked(&pack, Some(ItemKind::Document), &only_b, None);
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0].text, "beta");
-    assert!(ranked(&pack, Some(ItemKind::Learning), &MetaFilter::default()).is_empty());
+    assert!(
+        ranked(
+            &pack,
+            Some(ItemKind::Learning),
+            &MetaFilter::default(),
+            None
+        )
+        .is_empty()
+    );
 }
 
 #[test]

@@ -1,7 +1,8 @@
 //! Requests and responses for recall, fetch, list and forget.
 //!
 //! - **Recall** ([`RecallRequest`] → [`RecallAnswer`]) asks a question and gets
-//!   a synthesised answer with [`Citation`]s.
+//!   a synthesised answer with [`Citation`]s, or, in [`RecallMode::Evidence`],
+//!   the evidence for the caller's own model to answer from.
 //! - **Fetch** ([`FetchRequest`] → [`FetchPage`]) is raw retrieval in a
 //!   [`FetchMode`], filtered by metadata.
 //! - **List** ([`ListRequest`] → [`ListPage`]) pages through stored items
@@ -39,6 +40,38 @@ pub struct RecallRequest {
     /// ranking hint, never a filter (see [`TimeHint`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refers_to: Option<TimeHint>,
+    /// Conversation turns never cited: the calling thread's, which its
+    /// prompt already holds (see [`ThreadWindow`]). Read-only, so it can
+    /// never narrow a forget or an erase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude_thread: Option<ThreadWindow>,
+    /// Whether the engine writes the answer ([`RecallMode::Answer`], the
+    /// default) or returns the evidence for the caller to answer from.
+    #[serde(default, skip_serializing_if = "RecallMode::is_answer")]
+    pub mode: RecallMode,
+}
+
+/// What [`crate::MemoryEngine::recall`] puts in [`RecallAnswer::answer`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecallMode {
+    /// An answer the engine writes from what it recalled (an engine may run
+    /// a model for it).
+    #[default]
+    Answer,
+    /// The recalled evidence itself, as text, for a caller whose own model
+    /// writes the answer: the engine runs no answer step, and
+    /// [`RecallAnswer::model`] is `None`. The citations are the items the
+    /// evidence holds.
+    Evidence,
+}
+
+impl RecallMode {
+    /// Whether this is [`RecallMode::Answer`] (serde's skip test).
+    #[must_use]
+    pub fn is_answer(&self) -> bool {
+        matches!(self, Self::Answer)
+    }
 }
 
 impl RecallRequest {
@@ -51,6 +84,8 @@ impl RecallRequest {
             limit,
             instructions: None,
             refers_to: None,
+            exclude_thread: None,
+            mode: RecallMode::Answer,
         }
     }
 
@@ -58,24 +93,94 @@ impl RecallRequest {
     ///
     /// # Errors
     ///
-    /// [`Error::InvalidRequest`] for a blank question, a zero limit or an
-    /// invalid [`TimeHint`].
+    /// [`Error::InvalidRequest`] for a blank question, a zero limit, an
+    /// invalid [`TimeHint`] or a blank excluded thread.
     pub fn validate(&self) -> Result<()> {
         non_blank("recall question", &self.question)?;
         positive("recall limit", self.limit)?;
+        self.exclude_thread
+            .as_ref()
+            .map_or(Ok(()), ThreadWindow::validate)?;
         self.refers_to.as_ref().map_or(Ok(()), TimeHint::validate)
+    }
+}
+
+/// A thread's turns a read leaves out: every turn of `thread_id` from
+/// `from_turn` on. A caller reading inside a thread sets it to the turns its
+/// prompt already holds, so the message being answered (logged before the
+/// read) does not come back as a memory; `from_turn: 0` leaves the whole
+/// thread out. Engines apply it to what they return ([`ThreadWindow::excludes`]:
+/// conversation turns only); an engine whose store cannot exclude server side
+/// drops the matching items from its results.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadWindow {
+    /// The thread.
+    pub thread_id: String,
+    /// The first turn index still in the prompt; turns from here on are
+    /// left out.
+    #[serde(default)]
+    pub from_turn: u32,
+}
+
+impl ThreadWindow {
+    /// The whole of `thread_id`.
+    #[must_use]
+    pub fn whole(thread_id: impl Into<String>) -> Self {
+        Self {
+            thread_id: thread_id.into(),
+            from_turn: 0,
+        }
+    }
+
+    /// Whether `hit` lies inside the window.
+    #[must_use]
+    pub fn covers(&self, hit: &Hit) -> bool {
+        self.covers_meta(&hit.meta)
+    }
+
+    /// Whether an item carrying `meta` lies inside the window: it belongs
+    /// to the thread, and its turns (when it records them) reach
+    /// `from_turn`.
+    #[must_use]
+    pub fn covers_meta(&self, meta: &MemoryMeta) -> bool {
+        meta.thread_id.as_deref() == Some(self.thread_id.as_str())
+            && meta
+                .turns
+                .as_ref()
+                .is_none_or(|turns| turns.last >= self.from_turn)
+    }
+
+    /// Whether a read's `exclude_thread` leaves out an item of `kind`
+    /// carrying `meta`: only **conversation** turns are left out. A learning
+    /// or a document stamped with the thread (a host records where it was
+    /// learned) stays readable, since the prompt holds the thread's turns,
+    /// not what was learned from them.
+    #[must_use]
+    pub fn excludes(&self, kind: ItemKind, meta: &MemoryMeta) -> bool {
+        kind == ItemKind::Conversation && self.covers_meta(meta)
+    }
+
+    /// Checks the window names a thread.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidRequest`] for a blank thread id.
+    pub fn validate(&self) -> Result<()> {
+        non_blank("excluded thread id", &self.thread_id)
     }
 }
 
 /// A synthesised answer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecallAnswer {
-    /// The answer text.
+    /// The answer text; in [`RecallMode::Evidence`], the recalled evidence
+    /// as text (empty when nothing was recalled).
     pub answer: String,
     /// The items it drew on.
     #[serde(default)]
     pub citations: Vec<Citation>,
-    /// The model that answered, when the engine reports it.
+    /// The model that answered, when the engine reports it; `None` in
+    /// [`RecallMode::Evidence`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 }
@@ -157,6 +262,11 @@ pub struct FetchRequest {
     /// scopes ignores it. Must be positive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_scopes: Option<usize>,
+    /// Conversation turns never returned: the calling thread's (see
+    /// [`ThreadWindow`]). Read-only, so it can never narrow a forget or an
+    /// erase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude_thread: Option<ThreadWindow>,
 }
 
 /// Whether `n` is zero (serde's skip test).
@@ -177,6 +287,7 @@ impl FetchRequest {
             beliefs: 0,
             refers_to: None,
             max_scopes: None,
+            exclude_thread: None,
         }
     }
 
@@ -185,13 +296,17 @@ impl FetchRequest {
     /// # Errors
     ///
     /// [`Error::InvalidRequest`] for a blank query, a zero limit, a zero
-    /// [`FetchRequest::max_scopes`] or an invalid [`TimeHint`].
+    /// [`FetchRequest::max_scopes`], an invalid [`TimeHint`] or a blank
+    /// excluded thread.
     pub fn validate(&self) -> Result<()> {
         non_blank("fetch query", &self.query)?;
         positive("fetch limit", self.limit)?;
         if let Some(scopes) = self.max_scopes {
             positive("fetch max_scopes", scopes)?;
         }
+        self.exclude_thread
+            .as_ref()
+            .map_or(Ok(()), ThreadWindow::validate)?;
         self.refers_to.as_ref().map_or(Ok(()), TimeHint::validate)
     }
 }

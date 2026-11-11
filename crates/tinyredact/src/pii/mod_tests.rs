@@ -1,0 +1,739 @@
+//! PII redaction per identifier class, normalization bypasses, the strict
+//! boundary check and the candidate prefilter, under the corroborated policy.
+
+use super::*;
+
+/// These tests were written against the TinyCortex engine, whose content
+/// scrubber demands corroboration for bare card runs; they run under that
+/// policy. The strictest default policy is covered by `default_policy_tests`.
+fn redact_pii(text: &str) -> Sanitized<String> {
+    redact_pii_with(text, Policy::corroborated())
+}
+
+fn redacts(input: &str, token: &str) {
+    let out = redact_pii(input);
+    assert!(
+        out.value.contains(token),
+        "expected {token} in output. input={input:?} output={out:?}"
+    );
+}
+
+fn unchanged(input: &str) {
+    let out = redact_pii(input);
+    assert_eq!(
+        out.value, input,
+        "expected no change; report={:?}",
+        out.report
+    );
+    assert_eq!(out.report.pii_redactions, 0);
+}
+
+// --- CPF ---
+#[test]
+fn cpf_formatted_valid_redacted() {
+    redacts("CPF: 111.444.777-35.", PII_CPF);
+}
+#[test]
+fn cpf_formatted_invalid_kept() {
+    unchanged("CPF 111.444.777-99 nope");
+}
+#[test]
+fn cpf_all_same_digits_rejected() {
+    unchanged("Test 111.111.111-11");
+}
+#[test]
+fn cpf_bare_valid_redacted() {
+    redacts("Sem mascara 11144477735 ok", PII_CPF);
+}
+
+// --- CNPJ ---
+#[test]
+fn cnpj_formatted_valid_redacted() {
+    redacts("CNPJ 11.222.333/0001-81", PII_CNPJ);
+}
+#[test]
+fn cnpj_bare_valid_redacted() {
+    redacts("contract 11222333000181 yes", PII_CNPJ);
+}
+
+// --- CUIT ---
+#[test]
+fn cuit_valid_redacted() {
+    redacts("CUIT 20-11111111-2", PII_CUIT);
+}
+#[test]
+fn cuit_invalid_kept() {
+    unchanged("noise 20-12345678-0 noise");
+}
+
+// --- RFC ---
+#[test]
+fn rfc_redacted() {
+    redacts("Mi RFC VECJ880326XK4 .", PII_RFC);
+}
+#[test]
+fn rfc_lowercase_redacted() {
+    redacts("rfc vecj880326xk4", PII_RFC);
+}
+
+// --- My Number ---
+#[test]
+fn my_number_redacted_with_keyword() {
+    redacts("マイナンバー: 123456789012", PII_MYNUM);
+}
+#[test]
+fn bare_12_digits_without_keyword_kept() {
+    unchanged("Order 123456789012 shipped today.");
+}
+#[test]
+fn my_number_keyword_tab_separator_redacted() {
+    // `My\s?Number` accepts any single `\s`; the byte prefilter must recognise a
+    // tab-separated keyword, not just a literal space.
+    redacts("My\tNumber 123456789012", PII_MYNUM);
+}
+#[test]
+fn my_number_keyword_newline_separator_redacted() {
+    redacts("My\nNumber 123456789012", PII_MYNUM);
+}
+
+// --- E.164 + NANP phone ---
+#[test]
+fn e164_redacted() {
+    redacts("phone +15551234567", PII_PHONE);
+}
+#[test]
+fn nanp_formatted_redacted() {
+    redacts("call 415-555-0123 thanks", PII_PHONE);
+}
+#[test]
+fn nanp_with_country_code_redacted() {
+    redacts("+1 (212) 555-7890", PII_PHONE);
+}
+#[test]
+fn nanp_invalid_area_code_kept() {
+    unchanged("score 115-555-0123 ish");
+}
+#[test]
+fn nanp_bare_country_code_redacted() {
+    // Separator-less `1`+10-digit NANP: the old SCREEN reached PHONE_NANP_RE via
+    // the `\d{11,}` run; the prefilter must keep gating this through the phone
+    // class (the bare-CPF checksum rejects it, so nothing else redacts it).
+    redacts("12025551234", PII_PHONE);
+}
+
+// --- SSN ---
+#[test]
+fn ssn_valid_redacted() {
+    redacts("ssn 123-45-6789", PII_SSN);
+}
+#[test]
+fn ssn_reserved_area_kept() {
+    unchanged("test 666-12-3456");
+}
+#[test]
+fn ssn_zero_serial_kept() {
+    unchanged("test 123-45-0000");
+}
+
+// --- Credit card / Luhn ---
+#[test]
+fn credit_card_visa_redacted() {
+    // Visa test number with valid Luhn.
+    redacts("card 4111 1111 1111 1111 thanks", PII_CC);
+}
+#[test]
+fn credit_card_amex_redacted() {
+    redacts("card 378282246310005 used", PII_CC);
+}
+#[test]
+fn credit_card_invalid_luhn_kept() {
+    unchanged("invoice 4111 1111 1111 1112");
+}
+#[test]
+fn credit_card_bare_visa_redacted_without_keyword() {
+    // A real network IIN (Visa `4`) at an issued length: bare runs with an
+    // issued card shape still redact with no keyword anywhere near.
+    redacts("4111111111111111", PII_CC);
+}
+#[test]
+fn credit_card_bare_amex_redacted_without_keyword() {
+    redacts("378282246310005", PII_CC);
+}
+#[test]
+fn credit_card_keyword_corroborates_a_bare_non_iin_run() {
+    // Luhn-valid, but `17` is no network's IIN — the keyword is what makes
+    // this a card mention rather than a machine identifier.
+    redacts("card 1787178633773", PII_CC);
+}
+#[test]
+fn bare_luhn_valid_timestamp_kept() {
+    // A 13-digit epoch-millisecond timestamp that happens to pass Luhn
+    // (~10% of them do). No IIN, no keyword: not a card.
+    unchanged("run 1787178633773 finished");
+}
+#[test]
+fn credit_card_keyword_matches_serialized_key_shapes() {
+    // The keyword net is what the IIN table's incompleteness leans on, so it
+    // has to fire for the key shapes serialized payloads actually use. The
+    // digit run is Luhn-valid with no network's IIN (`17…`), so only the
+    // keyword tier can be doing the work in each of these.
+    for text in [
+        r#"{"card_number":"1787178633773"}"#,
+        r#"{"cardNumber":"1787178633773"}"#,
+        r#"{"credit_card":"1787178633773"}"#,
+        r#"{"creditCard":"1787178633773"}"#,
+        r#"{"ccNumber":"1787178633773"}"#,
+        r#"{"card_no":"1787178633773"}"#,
+        "CARD_NUMBER=1787178633773",
+        "cc=1787178633773",
+    ] {
+        let out = redact_pii(text);
+        assert!(
+            out.value.contains(PII_CC),
+            "expected the keyword tier to corroborate: {text:?} -> {out:?}"
+        );
+    }
+}
+
+#[test]
+fn credit_card_keyword_speaks_more_than_english() {
+    // Multilingual mandate: native card words corroborate too, and the
+    // window is wide enough that non-ASCII text does not evict them.
+    for text in [
+        "カード 1787178633773",
+        "信用卡 1787178633773",
+        "카드 1787178633773",
+        "карта 1787178633773",
+        "tarjeta 1787178633773",
+        "cartão 1787178633773",
+        "card 😀😀😀😀😀😀😀😀 1787178633773",
+    ] {
+        let out = redact_pii(text);
+        assert!(
+            out.value.contains(PII_CC),
+            "expected corroboration: {text:?} -> {out:?}"
+        );
+    }
+}
+
+#[test]
+fn credit_card_keyword_still_respects_word_boundaries() {
+    // `pan` must not fire inside an unrelated word: Luhn-valid non-IIN run
+    // next to `japan` stays untouched.
+    unchanged("japan 1787178633773 spans");
+}
+
+#[test]
+fn bare_brazilian_network_pans_redact_without_keyword() {
+    // Elo and Hipercard are in the IIN table (the module targets Brazilian
+    // PII by design — it carries CPF/CNPJ), so their bare PANs corroborate
+    // structurally, keyword or not.
+    redacts("5067310000000010", PII_CC);
+    redacts("6062821234567890", PII_CC);
+}
+
+#[test]
+fn bare_diners_14_digit_pan_redacts() {
+    // Regression for the review finding: the canonical 14-digit Diners test
+    // PAN redacted before the corroboration gate and must keep redacting.
+    redacts("30569309025904", PII_CC);
+}
+
+#[test]
+fn json_envelope_luhn_valid_timestamp_kept() {
+    // opencompany#1201: the exact corruption — a serialized record whose
+    // `at_millis` passed Luhn was redacted into unparseable JSON, and the
+    // read side then dropped the whole record as undecodable.
+    unchanged(
+        r#"{"v":1,"record":{"cycle_id":"c1","summary":"summary 1","at_millis":1787178633773}}"#,
+    );
+}
+
+// --- IBAN ---
+#[test]
+fn iban_de_redacted() {
+    // Known test IBAN with valid mod-97.
+    redacts("IBAN DE89370400440532013000 ok", PII_IBAN);
+}
+#[test]
+fn iban_invalid_kept() {
+    unchanged("noise DE89370400440532013001 noise");
+}
+#[test]
+fn iban_with_non_ascii_digits_does_not_panic() {
+    // Devanagari check digits match `IBAN_RE`'s Unicode `\d` but are not
+    // folded by normalization; both the content and boundary paths used to
+    // panic on them instead of leaving the text alone.
+    let text = "IBAN DE\u{096A}\u{096A}1234567890123456 end";
+    unchanged(text);
+    assert!(!has_likely_pii(text));
+}
+
+// --- Aadhaar ---
+#[test]
+fn aadhaar_formatted_verhoeff_valid_redacted() {
+    // 234123412346 is a known Verhoeff-valid Aadhaar test number.
+    redacts("Aadhaar 2341 2341 2346", PII_AADHAAR);
+}
+#[test]
+fn aadhaar_keyword_bare_redacted() {
+    redacts("Aadhaar: 234123412346", PII_AADHAAR);
+}
+#[test]
+fn aadhaar_invalid_verhoeff_kept() {
+    unchanged("Random 2341 2341 2345 nope");
+}
+#[test]
+fn aadhaar_formatted_newline_separator_redacted() {
+    // AADHAAR_FMT_RE separates groups with `[\s-]`; a newline-separated Aadhaar
+    // (no keyword, no dash) must still flag the formatted class in the prefilter.
+    redacts("2341\n2341\n2346", PII_AADHAAR);
+}
+
+// --- PAN-IN ---
+#[test]
+fn pan_in_redacted() {
+    redacts("PAN: ABCDE1234F", PII_PAN_IN);
+}
+
+// --- NINO ---
+#[test]
+fn nino_redacted() {
+    redacts("NI no AB123456C", PII_NINO);
+}
+#[test]
+fn nino_reserved_prefix_kept() {
+    unchanged("BG123456A");
+}
+
+// --- DNI / NIE ---
+#[test]
+fn dni_es_redacted() {
+    redacts("DNI 12345678Z", PII_DNI);
+}
+#[test]
+fn dni_es_bad_letter_kept() {
+    unchanged("ID 12345678A code");
+}
+#[test]
+fn nie_es_redacted() {
+    redacts("NIE X1234567L", PII_DNI);
+}
+
+// --- RRN Korea ---
+#[test]
+fn rrn_kr_redacted() {
+    redacts("주민번호 900101-1234567", PII_RRN);
+}
+#[test]
+fn rrn_kr_bad_gender_digit_kept() {
+    unchanged("ref 900101-5234567 nope");
+}
+
+// --- Bypass resistance ---
+#[test]
+fn fullwidth_digits_cannot_bypass_cpf() {
+    // 111.444.777-35 with fullwidth digits and punctuation.
+    let input = "CPF: １１１．４４４．７７７－３５ done";
+    let out = redact_pii(input);
+    assert!(out.value.contains(PII_CPF), "got {out:?}");
+}
+
+#[test]
+fn zero_width_chars_cannot_bypass_ssn() {
+    // U+200B inserted between digits.
+    let input = "ssn 1\u{200B}23-4\u{200B}5-6789 done";
+    let out = redact_pii(input);
+    assert!(out.value.contains(PII_SSN), "got {out:?}");
+}
+
+#[test]
+fn arabic_indic_digits_normalize_for_phone() {
+    let input = "phone +١٥٥٥١٢٣٤٥٦٧";
+    let out = redact_pii(input);
+    assert!(out.value.contains(PII_PHONE), "got {out:?}");
+}
+
+// --- Aggressive mix end-to-end ---
+#[test]
+fn aggressive_mixed_document() {
+    let input = "\
+Cliente RFC VECJ880326XK4. \
+Empresa CNPJ 11.222.333/0001-81. \
+Argentino CUIT 20-11111111-2. \
+Brasileiro CPF 111.444.777-35. \
+マイナンバー: 123456789012. \
+SSN 123-45-6789. \
+Card 4111 1111 1111 1111. \
+IBAN DE89370400440532013000. \
+PAN ABCDE1234F. \
+NI AB123456C. \
+DNI 12345678Z. \
+RRN 900101-1234567. \
+Phone +15551234567.";
+    let out = redact_pii(input);
+    for token in [
+        PII_RFC, PII_CNPJ, PII_CUIT, PII_CPF, PII_MYNUM, PII_SSN, PII_CC, PII_IBAN, PII_PAN_IN,
+        PII_NINO, PII_DNI, PII_RRN, PII_PHONE,
+    ] {
+        assert!(
+            out.value.contains(token),
+            "missing {token} in: {}",
+            out.value
+        );
+    }
+    assert!(out.report.pii_redactions >= 13);
+}
+
+// --- has_likely_pii ---
+#[test]
+fn has_likely_pii_detects_cpf() {
+    assert!(has_likely_pii("user/111.444.777-35"));
+}
+
+#[test]
+fn has_likely_email_detects_email_without_changing_boundary_pii() {
+    assert!(has_likely_email("user/alice@example.com"));
+    assert!(!has_likely_pii("user/alice@example.com"));
+}
+#[test]
+fn has_likely_pii_quiet_on_normal_text() {
+    assert!(!has_likely_pii("memory/global/preferences"));
+}
+
+/// Regression: zero-padded millisecond-timestamp keys must NOT be
+/// flagged as PII even when the digit run happens to satisfy Luhn.
+/// `redact_pii` content scrubbing may still flag the same string —
+/// `has_likely_pii` (used for boundary rejection of internal keys)
+/// must stay strict to formatted/keyword PII only.
+#[test]
+fn has_likely_pii_ignores_bare_luhn_timestamp_keys() {
+    // 18-digit padded timestamps where the digit total mod 10 == 0
+    // (the Luhn-passing case that previously rejected autocomplete
+    // KV writes and screen-intelligence document writes).
+    for key in [
+        "accepted:000001747729035001",
+        "completion:000001747729035011",
+        "screen_intelligence_vision-1747729035001-VSCode",
+    ] {
+        assert!(
+            !has_likely_pii(key),
+            "internal key {key:?} must not be rejected as PII"
+        );
+    }
+}
+
+/// Strict boundary check should still reject formatted PII even though
+/// it skips bare-numeric checksum patterns.
+#[test]
+fn has_likely_pii_still_blocks_formatted_secrets() {
+    assert!(has_likely_pii("ssn-123-45-6789"));
+    assert!(has_likely_pii("cliente-RFC-VECJ880326XK4"));
+    assert!(has_likely_pii("cuit-20-11111111-2"));
+}
+
+/// Regression for Sentry TAURI-RUST-54T / GH #2848: scanner-built
+/// `namespace` and `key` values containing bare-numeric phone-shaped
+/// digit runs (WhatsApp group JID `<phone>-<unix>@g.us`, WhatsApp
+/// broadcast `<phone>@broadcast`, US-prefixed WhatsApp 1:1 JID,
+/// telegram numeric peer ID) must NOT be rejected by the boundary
+/// PII check. NANP matches `\d{10,11}` with optional separators —
+/// strict mode must skip it. Content scrubbing via `redact_pii`
+/// continues to redact these substrings (see
+/// `redact_pii_still_blurs_bare_phone_in_content` below).
+#[test]
+fn has_likely_pii_ignores_scanner_bare_phone_keys() {
+    for key in [
+        // WhatsApp group JID — chat_id = "<phone>-<unix-ts>@g.us"
+        "12025551234-1543890267@g.us:2026-05-30",
+        // WhatsApp broadcast list
+        "12025551234@broadcast:2026-05-30",
+        // WhatsApp 1:1 JID, country-coded US number (`1` + 10 digits)
+        "12025551234@c.us:2026-05-30",
+        // Same shape carried in the namespace
+        "whatsapp-web:12025551234@c.us",
+        "whatsapp-web:12025551234-1543890267@g.us",
+        // Telegram numeric peer_id key
+        "4123456789:2026-05-30",
+    ] {
+        assert!(
+            !has_likely_pii(key),
+            "scanner-built key {key:?} must not be rejected as PII"
+        );
+    }
+}
+
+/// Same regression but for the E.164 (`+`-prefixed) shape — iMessage
+/// posts `key = format!("{chat_id}:{day}")` where `chat_id` can be
+/// `+12025551234`. Strict mode must skip; content redaction stays.
+#[test]
+fn has_likely_pii_ignores_bare_e164_phone_keys() {
+    for key in [
+        "+12025551234:2026-05-30",
+        "imessage:+12025551234",
+        "imessage:+12025551234:2026-05-30",
+    ] {
+        assert!(
+            !has_likely_pii(key),
+            "E.164-shaped key {key:?} must not be rejected as PII"
+        );
+    }
+}
+
+/// `redact_pii` (content scrubbing path — NOT the boundary check)
+/// must still redact formatted NANP and E.164 phone numbers found
+/// inside document bodies. False positives in the content path only
+/// blur substring bytes; they do not reject the write — which is the
+/// asymmetry this PR preserves vs. the boundary check.
+///
+/// Note: bare 10-digit NANP runs (`2025551234` with no separators)
+/// are NOT reached by `redact_pii` at all — the SCREEN fast-path
+/// requires either `\d{11,}`, a separator, or `+`, so a bare 10-digit
+/// run short-circuits as "no candidate". That pre-existed this PR; a
+/// pinning sentinel for it lives below.
+#[test]
+fn redact_pii_still_blurs_formatted_and_e164_phone_in_content() {
+    let out = redact_pii("call me at 202-555-1234 or +12025551234");
+    let n_phone = out.value.matches(PII_PHONE).count();
+    assert!(
+        n_phone >= 2,
+        "redact_pii must still blur both formatted NANP and E.164 phones in content, \
+             got {n_phone} PII_PHONE token(s) in: {}",
+        out.value
+    );
+    assert!(out.report.pii_redactions >= 2);
+}
+
+/// Sentinel pinning a pre-existing SCREEN limitation: a bare 10-digit
+/// NANP run (`2025551234` with no separators) is short-circuited by
+/// the `SCREEN` fast-path because no `SCREEN` regex matches a 10-digit
+/// bare run (`\d{11,}` is the closest, but it needs 11+). This is the
+/// status quo on `main` — this PR does not change it. The test exists
+/// so any future widening of `SCREEN` (e.g. to catch bare NANP) trips
+/// here as a deliberate review checkpoint, NOT a regression.
+#[test]
+fn redact_pii_does_not_reach_bare_10_digit_nanp_today() {
+    let out = redact_pii("call me at 2025551234 thanks");
+    assert!(
+        !out.value.contains(PII_PHONE),
+        "SCREEN fast-path historically skips bare 10-digit NANP — \
+             if this test fails, SCREEN was widened; revisit the boundary-check \
+             behavior in `has_likely_pii` before adjusting. Got: {}",
+        out.value
+    );
+}
+
+#[test]
+fn empty_text_is_noop() {
+    unchanged("");
+}
+
+// --- Byte prefilter: per-class positives (incl. non-Latin) ---
+
+/// Devanagari Aadhaar keyword must still route into the keyword-gated Aadhaar
+/// path (the `आधार` needle lives in `AADHAAR_KEYWORDS`).
+#[test]
+fn aadhaar_devanagari_keyword_redacted() {
+    redacts("आधार 234123412346", PII_AADHAAR);
+}
+
+/// Japanese My-Number keyword (kanji form) routes into the My-Number path.
+#[test]
+fn my_number_kanji_keyword_redacted() {
+    redacts("個人番号 123456789012", PII_MYNUM);
+}
+
+/// `scan_candidates` flags the right class for representative per-class inputs.
+#[test]
+fn scan_flags_expected_classes() {
+    assert!(scan_candidates("111.444.777-35").cpf_fmt);
+    assert!(scan_candidates("11.222.333/0001-81").cnpj_fmt);
+    assert!(scan_candidates("20-11111111-2").cuit);
+    assert!(scan_candidates("DE89370400440532013000").iban);
+    assert!(scan_candidates("4111111111111111").cc);
+    assert!(scan_candidates("11222333000181").cnpj_bare);
+    assert!(scan_candidates("11144477735").cpf_bare);
+    assert!(scan_candidates("2341 2341 2346").aadhaar_fmt);
+    assert!(scan_candidates("aadhaar 234123412346").aadhaar_kw);
+    assert!(scan_candidates("आधार 234123412346").aadhaar_kw);
+    assert!(scan_candidates("12345678Z").dni);
+    assert!(scan_candidates("X1234567L").nie);
+    assert!(scan_candidates("AB123456C").nino);
+    assert!(scan_candidates("123-45-6789").ssn);
+    assert!(scan_candidates("900101-1234567").rrn);
+    assert!(scan_candidates("VECJ880326XK4").rfc);
+    assert!(scan_candidates("ABCDE1234F").pan_in);
+    assert!(scan_candidates("+15551234567").phone_e164);
+    assert!(scan_candidates("415-555-0123").phone_nanp);
+    assert!(scan_candidates("マイナンバー 123456789012").mynumber);
+    assert!(scan_candidates("My Number 123456789012").mynumber);
+}
+
+/// Clean, PII-free text flags no class at all — the whole precise pass is
+/// skipped and every precise regex stays uncompiled.
+#[test]
+fn scan_clean_text_flags_nothing() {
+    for clean in [
+        "",
+        "just some ordinary words here",
+        "memory/global/preferences",
+        "the quick brown fox",
+        "https://example.com/path?q=1",
+        "snake_case_identifier_v2",
+    ] {
+        let cand = scan_candidates(clean);
+        assert!(!cand.any(), "clean text flagged a class: {clean:?}");
+    }
+}
+
+/// A bare separator-less 10-digit run must NOT flag the NANP phone class — this
+/// is what preserves the documented "bare 10-digit NANP is never reached"
+/// behavior even though the precise NANP regex would otherwise match it.
+#[test]
+fn scan_bare_10_digit_run_does_not_flag_nanp() {
+    assert!(!scan_candidates("call me at 2025551234 thanks").phone_nanp);
+}
+
+/// Parity oracle: the new byte prefilter must be a SUPERSET of the legacy
+/// `SCREEN` regex set. For every corpus input, if the old combined set would
+/// have matched the normalized text, the new per-class scan must flag at least
+/// one class — otherwise a real PII candidate would be silently dropped.
+#[test]
+fn prefilter_is_superset_of_legacy_screen() {
+    use regex::RegexSet;
+
+    // Byte-for-byte the pattern list this PR removed from `pii.rs`.
+    let legacy_screen = RegexSet::new([
+        r"\d{11,}",
+        r"\d{3}\.\d{3}\.\d{3}-\d{2}",
+        r"\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}",
+        r"\d{2}-\d{8}-\d",
+        r"(?i)[A-Z]{3,4}\d{6}",
+        r"(?:マイナンバー|個人番号|My\s?Number)",
+        r"\+\d{7}",
+        r"\(?[2-9]\d{2}\)?[\s.\-]\d{3}[\s.\-]\d{4}",
+        r"\d{3}-\d{2}-\d{4}",
+        r"\b[A-Z]{2}\d{2}[A-Z0-9]",
+        r"\d{4}[\s\-]\d{4}[\s\-]\d{4}",
+        r"(?i)aadhaar|aadhar|आधार|uidai",
+        r"(?i)[A-Z]{5}\d{4}[A-Z]",
+        r"(?i)[A-Z]{2}\d{6}[A-D]",
+        r"\b\d{8}[A-Z]\b",
+        r"(?i)[XYZ]\d{7}[A-Z]",
+        r"\d{6}-[1-4]\d{6}",
+    ])
+    .expect("legacy screen");
+
+    let corpus = [
+        // Real PII, one per class.
+        "CPF: 111.444.777-35.",
+        "Sem mascara 11144477735 ok",
+        "CNPJ 11.222.333/0001-81",
+        "contract 11222333000181 yes",
+        "CUIT 20-11111111-2",
+        "Mi RFC VECJ880326XK4 .",
+        "マイナンバー: 123456789012",
+        "個人番号 123456789012",
+        "My Number 123456789012",
+        // Whitespace-separator variants the precise regexes accept via `\s`.
+        "My\tNumber 123456789012",
+        "My\nNumber 123456789012",
+        "2341\n2341\n2346",
+        "12025551234",
+        "phone +15551234567",
+        "call 415-555-0123 thanks",
+        "+1 (212) 555-7890",
+        "ssn 123-45-6789",
+        "card 4111 1111 1111 1111 thanks",
+        "card 378282246310005 used",
+        "IBAN DE89370400440532013000 ok",
+        "Aadhaar 2341 2341 2346",
+        "Aadhaar: 234123412346",
+        "आधार 234123412346",
+        "uidai 234123412346",
+        "PAN: ABCDE1234F",
+        "NI no AB123456C",
+        "DNI 12345678Z",
+        "NIE X1234567L",
+        "주민번호 900101-1234567",
+        // Scanner-built / borderline identifiers.
+        "12025551234-1543890267@g.us:2026-05-30",
+        "+12025551234:2026-05-30",
+        "accepted:000001747729035001",
+        "screen_intelligence_vision-1747729035001-VSCode",
+        "Order 123456789012 shipped today.",
+        // Clean text (screen won't match; nothing to assert but exercises path).
+        "memory/global/preferences",
+        "the quick brown fox jumps",
+        "just some ordinary words here",
+    ];
+
+    for input in corpus {
+        let nview = NormalizedView::build(input);
+        if legacy_screen.is_match(&nview.normalized) {
+            assert!(
+                scan_candidates(&nview.normalized).any(),
+                "legacy SCREEN matched but new prefilter flagged nothing: {input:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn credit_card_followed_by_space_and_digits_redacted() {
+    let input = "card 4111 1111 1111 1111 123";
+    let survived: Vec<_> = [
+        ("corroborated", redact_pii(input)),
+        ("default", redact_pii_with(input, Policy::default())),
+    ]
+    .into_iter()
+    .filter(|(_, out)| out.value.contains("4111 1111 1111 1111"))
+    .map(|(policy, out)| format!("{policy}: {:?}", out.value))
+    .collect();
+    assert!(survived.is_empty(), "card survived: {survived:?}");
+}
+
+#[test]
+fn credit_card_after_a_leading_number_is_redacted_and_the_number_kept() {
+    let out = redact_pii_with("qty 2 4111 1111 1111 1111", Policy::default());
+    assert!(
+        !out.value.contains("4111 1111"),
+        "card survived: {:?}",
+        out.value
+    );
+    assert!(
+        out.value.starts_with("qty 2 "),
+        "the leading number went too: {:?}",
+        out.value
+    );
+}
+
+#[test]
+fn a_separated_digit_list_with_no_card_is_left_alone() {
+    // The whole run fails Luhn and its only Luhn-valid window,
+    // `1000 2000 1000 0002`, has no network IIN and no card keyword nearby,
+    // so it is not taken as a card under either gate.
+    let input = "ids 123 1000 2000 1000 0002";
+    for policy in [Policy::default(), Policy::corroborated()] {
+        assert_eq!(redact_pii_with(input, policy).value, input, "{policy:?}");
+    }
+}
+
+#[test]
+fn a_partial_overlap_keeps_its_tail_redacted() {
+    let mut hits = vec![
+        Hit {
+            start: 5,
+            end: 15,
+            token: PII_PHONE,
+        },
+        Hit {
+            start: 0,
+            end: 10,
+            token: PII_CC,
+        },
+    ];
+    dedupe_overlaps(&mut hits);
+    let ranges: Vec<_> = hits.iter().map(|h| (h.start, h.end, h.token)).collect();
+    assert_eq!(ranges, vec![(0, 15, PII_CC)]);
+}

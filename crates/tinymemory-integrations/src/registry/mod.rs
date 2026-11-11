@@ -1,4 +1,5 @@
-//! The engine registry: [`list_engines`] and [`build_engine`].
+//! The engine registry: [`list_engines`], [`build_engine`] and the guarded
+//! [`binder`] API for host engine bindings.
 //!
 //! Two engines are registered, both served by [`crate::cortex`]:
 //!
@@ -20,6 +21,9 @@ use crate::cortex::{
 use tinymemory_api::{EngineDescriptor, Error, MemoryEngine, Result};
 
 use crate::config::EngineSettings;
+
+/// Cached engine bindings and safety decorators for hosts.
+pub mod binder;
 
 /// How an engine authenticates.
 #[derive(Clone, Default)]

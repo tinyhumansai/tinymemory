@@ -1,0 +1,20 @@
+[package]
+name = "tinyredact"
+description = "Secret, PII, and home-path scrubbing with credential markers and a corroborated bare-card policy"
+readme = "README.md"
+keywords = ["redaction", "pii", "secrets", "security"]
+categories = ["text-processing"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+regex = "1.10"
+serde_json = "1"
+log = "0.4"
+
+[lints]
+workspace = true

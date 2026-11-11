@@ -4,6 +4,8 @@ use super::*;
 use serde_json::json;
 use tinymemory_api::conformance::ReferenceEngine;
 
+use crate::ops::{DEFAULT_BUCKETS, MAX_BUCKETS, MAX_LIMIT};
+
 fn tools() -> MemoryTools {
     MemoryTools::new(Arc::new(ReferenceEngine::new()))
 }
@@ -56,6 +58,36 @@ fn debug_names_the_engine_and_scope() {
     assert!(
         text.contains("reference") && text.contains("scope"),
         "{text}"
+    );
+}
+
+#[test]
+fn read_tool_schemas_use_the_shared_maximum_limit() {
+    let spec = tools()
+        .specs()
+        .into_iter()
+        .find(|spec| spec.name == MEMORY_LIST)
+        .unwrap();
+    assert_eq!(
+        spec.parameters["properties"]["limit"]["maximum"],
+        json!(MAX_LIMIT)
+    );
+}
+
+#[test]
+fn explorer_schema_uses_its_separate_bucket_default_and_maximum() {
+    let spec = tools()
+        .specs()
+        .into_iter()
+        .find(|spec| spec.name == MEMORY_EXPLORE)
+        .unwrap();
+    assert_eq!(
+        spec.parameters["properties"]["limit"]["default"],
+        json!(DEFAULT_BUCKETS)
+    );
+    assert_eq!(
+        spec.parameters["properties"]["limit"]["maximum"],
+        json!(MAX_BUCKETS)
     );
 }
 
