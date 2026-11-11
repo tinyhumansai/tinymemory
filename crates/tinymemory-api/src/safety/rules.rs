@@ -3,8 +3,9 @@
 //! Two flavours of rule, both compiled once into a process-wide static:
 //!
 //! * **Pattern rules** — a [`Regex`] plus an optional structural `validator`
-//!   (Luhn for cards, mod-97 for IBANs, octet range for IPv4) that rejects
-//!   shape-matches that aren't actually valid identifiers.
+//!   (Luhn for cards, mod-97 for IBANs, octet range for IPv4, digit count for
+//!   international phone numbers) that rejects shape-matches that aren't
+//!   actually valid identifiers.
 //! * **Keyword rules** — an alternation of domain terms wrapped in word
 //!   boundaries, used for the topical categories (medical / legal / financial /
 //!   family) where there is no single canonical value shape.
@@ -84,6 +85,13 @@ pub(crate) fn is_luhn_valid(raw: &str) -> bool {
         sum += v;
     }
     sum.is_multiple_of(10)
+}
+
+/// Digit-count bounds for an international phone number: 7–15 digits once
+/// separators are removed. E.164 allows at most 15, and nothing shorter than
+/// 7 is a dialable subscriber number anywhere.
+pub(crate) fn has_international_phone_digit_count(raw: &str) -> bool {
+    (7..=15).contains(&raw.bytes().filter(u8::is_ascii_digit).count())
 }
 
 /// Validate an IBAN candidate (ISO 13616): separators removed, 15–34
@@ -186,9 +194,19 @@ fn build_rules() -> Vec<Rule> {
             r"(?:\+|\b)(?:1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b",
             None,
         ),
-        // Legacy international phone-like pattern. Its repetition counts
-        // separators too; normalized digit bounds remain follow-up #263.
-        pattern_rule(PiiCategory::PhoneNumber, r"\+\d(?:[\d\s\-]{6,16}\d)", None),
+        // International phone number: `+` and 7–15 digits, with at most one
+        // space or hyphen between any two digits. The pattern has no upper
+        // bound on purpose: it consumes the whole digit-and-separator run, and
+        // the validator then rejects any run outside 7–15 digits, so an
+        // overlong value is left alone rather than matched on a 15-digit head
+        // that happens to end at a separator. Digits are ASCII only, the same
+        // set the validator counts; `\d` would also take other scripts' digits
+        // and let a run past 15 digits through.
+        pattern_rule(
+            PiiCategory::PhoneNumber,
+            r"\+[0-9](?:[ -]?[0-9]){6,}\b",
+            Some(has_international_phone_digit_count),
+        ),
         // IPv4 address (octet-validated).
         pattern_rule(
             PiiCategory::IpAddress,
