@@ -164,6 +164,9 @@ pub(crate) struct Double {
     /// Recalls over a scope containing this text are held this long (ms)
     /// before they answer, as a slow pack is.
     pub(crate) slow_recall: Mutex<Option<(&'static str, u64)>>,
+    /// Channel-specific recall packs are held this long while broad packs
+    /// still answer, to cover partial Evidence results at the deadline.
+    pub(crate) slow_channel_recall: Mutex<Option<u64>>,
 }
 
 /// The shared handle the routes and tests hold.
@@ -171,9 +174,13 @@ pub(crate) type Shared = Arc<Double>;
 
 /// Decrements `counter` if positive; whether a unit was taken.
 pub(crate) fn take_one(counter: &AtomicUsize) -> bool {
-    counter
+    // `fetch_update` is deprecated for `try_update` on newer toolchains, which
+    // is not stable on this crate's MSRV.
+    #[allow(deprecated)]
+    let taken = counter
         .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-        .is_ok()
+        .is_ok();
+    taken
 }
 
 impl Double {

@@ -13,6 +13,9 @@ use tinymemory_api::{
     RecallAnswer, StoreReceipt,
 };
 
+const EVIDENCE_TOKENS: usize = 2_500;
+const PARTLY_SEARCHED: &str = "\n\n(Memory was only partly searched";
+
 /// `memory_recall`'s result: `{answer, citations: [...]}`.
 pub(crate) fn recall(answer: &RecallAnswer) -> Value {
     json!({
@@ -24,6 +27,91 @@ pub(crate) fn recall(answer: &RecallAnswer) -> Value {
 /// `memory_fetch`'s result: `{hits: [...], next_cursor?}`.
 pub(crate) fn fetch(page: &FetchPage) -> Value {
     paged("hits", &page.hits, page.next_cursor.as_deref())
+}
+
+/// The single-name tool's fetch text, with the engine cursor returned beside it.
+pub(crate) fn fetch_page_text(page: &FetchPage) -> String {
+    let mut output = match page.hits.len() {
+        0 => "Nothing in memory matches.".to_string(),
+        1 => "1 match.".to_string(),
+        count => format!("Top {count} matches, best first."),
+    };
+    for hit in &page.hits {
+        output.push_str("\n\n");
+        if let Some(at) = hit.meta.observed_at {
+            output.push_str(&format!("[{}] ", at.format("%Y-%m-%d %H:%M UTC")));
+        }
+        match hit.kind {
+            tinymemory_api::ItemKind::Learning => output.push_str("learning: "),
+            tinymemory_api::ItemKind::Document => output.push_str("document: "),
+            tinymemory_api::ItemKind::Conversation => {}
+        }
+        output.push_str(hit.text.trim());
+        output.push_str(&format!("\n(id {})", hit.id));
+    }
+    output
+}
+
+/// Caps evidence at about 2,500 tokens without splitting an entry's lines.
+///
+/// The byte threshold matches the host tool's four-characters-per-token
+/// estimate. An oversized first line is retained whole, the partially
+/// searched closing note is preserved, and the rest stays reachable through
+/// fetch.
+pub(crate) fn capped_evidence(evidence: &str) -> String {
+    const SEPARATOR: &str = "\n\n---\n\n";
+    let budget = EVIDENCE_TOKENS * 4;
+    if evidence.len() <= budget {
+        return evidence.to_string();
+    }
+    let (body, closing) = match evidence.rfind(PARTLY_SEARCHED) {
+        Some(at) => (&evidence[..at], &evidence[at..]),
+        None => (evidence, ""),
+    };
+    let entries: Vec<&str> = body.split(SEPARATOR).collect();
+    let mut output = String::new();
+    let mut whole = 0;
+    let mut cut_short = false;
+    for entry in &entries {
+        let joint = if output.is_empty() { "" } else { SEPARATOR };
+        if output.len() + joint.len() + entry.len() <= budget {
+            output.push_str(joint);
+            output.push_str(entry);
+            whole += 1;
+            continue;
+        }
+        let mut lines = 0;
+        for line in entry.split('\n') {
+            let piece = (if lines == 0 { joint.len() } else { 1 }) + line.len();
+            if output.len() + piece > budget && !output.is_empty() {
+                break;
+            }
+            output.push_str(if lines == 0 { joint } else { "\n" });
+            output.push_str(line);
+            lines += 1;
+        }
+        if lines == entry.split('\n').count() {
+            whole += 1;
+        } else if lines > 0 {
+            output.push_str("\n[…]");
+            cut_short = true;
+        }
+        break;
+    }
+    let left = entries.len() - whole - usize::from(cut_short);
+    if left > 0 || cut_short {
+        let shortened = if cut_short {
+            ", the last one shortened,"
+        } else {
+            ""
+        };
+        output.push_str(&format!(
+            "\n\n({left} more memory entries left out{shortened} to keep this under about \
+             {EVIDENCE_TOKENS} tokens; search again with more specific words to see others.)"
+        ));
+    }
+    output.push_str(closing);
+    output
 }
 
 /// `memory_list`'s result: `{items: [...], next_cursor?}`.

@@ -40,6 +40,49 @@ use crate::documents::{
     DocumentConverter, DocumentFormat, Error, RawDocument, Result, converted_item,
 };
 
+/// Largest file a host may pass to brain ingestion, in bytes.
+pub const MAX_INGEST_BYTES: u64 = 25 * 1024 * 1024;
+
+/// The source a synced item belongs to, keyed by the source kind on the
+/// TinyMemory API wire.
+#[must_use]
+pub fn brain_source(kind: tinymemory_api::SourceKind) -> BrainSource {
+    use tinymemory_api::SourceKind as Kind;
+    match kind {
+        Kind::Github => BrainSource::Github,
+        Kind::Link | Kind::Rss => BrainSource::Web,
+        Kind::Folder | Kind::File => BrainSource::Files,
+        Kind::Conversation => BrainSource::Other("conversation".to_string()),
+        Kind::Agent => BrainSource::Other("agent".to_string()),
+        Kind::Import => BrainSource::Other("import".to_string()),
+    }
+}
+
+/// Parses a host-provided brain source id.
+///
+/// # Errors
+///
+/// [`Error::Invalid`] when `raw` is blank or not a valid source id.
+pub fn parse_source(raw: &str) -> Result<BrainSource> {
+    raw.parse::<BrainSource>()
+        .map_err(|error| Error::Invalid(error.to_string()))
+}
+
+/// Checks the byte size of a file before the host reads it into memory.
+///
+/// # Errors
+///
+/// [`Error::TooLarge`] when `size` exceeds [`MAX_INGEST_BYTES`].
+pub fn check_ingest_size(size: u64) -> Result<()> {
+    if size > MAX_INGEST_BYTES {
+        return Err(Error::TooLarge {
+            size: size.min(usize::MAX as u64) as usize,
+            limit: MAX_INGEST_BYTES as usize,
+        });
+    }
+    Ok(())
+}
+
 /// The brain source a file of `format` belongs to when the caller names
 /// none: [`BrainSource::Files`], whatever the format. A source is where a
 /// document came from, so every local file shares one, and the format stays

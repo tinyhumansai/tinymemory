@@ -18,6 +18,29 @@ fn every_format_is_a_file() {
     }
 }
 
+#[test]
+fn source_kinds_map_to_their_brain_source() {
+    use tinymemory_api::SourceKind;
+
+    for (kind, expected) in [
+        (SourceKind::Github, BrainSource::Github),
+        (SourceKind::Link, BrainSource::Web),
+        (SourceKind::Rss, BrainSource::Web),
+        (SourceKind::Folder, BrainSource::Files),
+        (SourceKind::File, BrainSource::Files),
+    ] {
+        assert_eq!(brain_source(kind), expected, "{kind:?}");
+    }
+}
+
+#[test]
+fn parses_brain_sources_and_checks_ingest_size_at_the_boundary() {
+    assert_eq!(parse_source(" notion ").unwrap(), BrainSource::Notion);
+    assert!(parse_source(" ").is_err());
+    assert!(check_ingest_size(MAX_INGEST_BYTES).is_ok());
+    assert!(check_ingest_size(MAX_INGEST_BYTES + 1).is_err());
+}
+
 #[tokio::test]
 async fn html_is_a_file_unless_the_caller_says_otherwise() {
     let page = RawDocument::new(

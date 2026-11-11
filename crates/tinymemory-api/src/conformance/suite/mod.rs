@@ -35,12 +35,15 @@
 //!     and everything below it, leave its sibling, store an erased item anew
 //!     rather than replay it, and refuse the whole tree without its interlock.
 //! 13. `recall` — an answer cites items that resolve through `list`.
-//! 14. `consolidate` — a malformed request is refused, and a valid one is
+//! 14. `channel` — recall, list, explore and forget by filter honor an exact
+//!     channel match and leave other channels untouched.
+//! 15. `consolidate` — a malformed request is refused, and a valid one is
 //!     answered as the descriptor's `consolidation` promises.
 //!
 //! Finally the run's items are forgotten by filter and must be gone.
 
 mod bulk;
+mod channel;
 mod checks;
 mod erase;
 mod explore;

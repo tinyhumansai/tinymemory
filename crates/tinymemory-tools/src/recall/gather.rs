@@ -39,7 +39,9 @@ use tinymemory_api::{
 };
 
 use super::render::{Body, Line, Section, shorten, single_line};
-use super::types::{HolisticRecall, ScopeSection, SectionHits, SectionQuery, SkippedSection};
+use super::types::{
+    HolisticRecall, ScopeSection, SectionHits, SectionQuery, SkipReason, SkippedSection,
+};
 
 /// Longest a single bullet may be, in characters, before it is shortened: one
 /// long document must not crowd out a section.
@@ -178,7 +180,7 @@ pub(super) async fn section(
                 "[recall] section skipped heading={:?} error={error}",
                 section.heading
             );
-            skipped(section, error.to_string())
+            skipped(section, SkipReason::Engine(error))
         }
     }
 }
@@ -202,11 +204,11 @@ fn wanted(request: &HolisticRecall, section: &ScopeSection) -> usize {
     section.limit + request.exclude_ids.len() + window + earlier
 }
 
-fn skipped(section: &ScopeSection, reason: String) -> Gathered {
+fn skipped(section: &ScopeSection, reason: SkipReason) -> Gathered {
     Gathered::Skipped(skipped_section(section, reason))
 }
 
-fn skipped_section(section: &ScopeSection, reason: String) -> SkippedSection {
+fn skipped_section(section: &ScopeSection, reason: SkipReason) -> SkippedSection {
     SkippedSection {
         heading: section.heading.clone(),
         reason,
@@ -559,7 +561,7 @@ pub(super) fn settle(
         newest_turns_first_within_thread(&mut hits);
     }
     if hits.is_empty() {
-        return Settled::Skipped(skipped_section(section, "empty".to_string()));
+        return Settled::Skipped(skipped_section(section, SkipReason::Empty));
     }
     shown.extend(hits.iter().map(|hit| hit.id.clone()));
     let lines = hits

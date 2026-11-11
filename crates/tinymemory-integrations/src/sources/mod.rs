@@ -2,9 +2,11 @@
 //! repository, an RSS feed or a local conversation
 //! into [`StoreItem`](tinymemory_api::StoreItem)s.
 //!
-//! - **Configuration** — what a source *is* ([`MemorySourceEntry`], keyed by
-//!   [`SourceKind`], checked by [`MemorySourceEntry::validate`]). Where the
-//!   host stores its sources, and how it edits them, is the host's business.
+//! - **Configuration** — reader entries ([`MemorySourceEntry`]) and the
+//!   host's persisted source types ([`MemorySourceConfig`], keyed by
+//!   [`MemorySourceKind`]). [`SourceSpec`] normalizes targets and checks
+//!   duplicate, schedule and namespace rules; the host owns persistence and
+//!   legacy migration.
 //! - **Readers** — [`readers::SourceReader`] lists a source's items and reads
 //!   one. Local readers (folder, file, conversation) are always compiled; the
 //!   network readers (GitHub, RSS, web page) and `fetch` sit behind the
@@ -15,7 +17,8 @@
 //!   body is converted to markdown through [`crate::documents`].
 //!
 //! Scheduling, credentials and egress budgets stay with the host: this module
-//! reads when asked.
+//! reads when asked. Sync-state storage and enqueueing placed-item belief jobs
+//! are host ports; [`state`] and [`sync`] provide the shared types and logic.
 //!
 //! # Example
 //!
@@ -56,16 +59,21 @@
 //! # Feature flags
 //!
 //! - `sources` — everything above except the network pieces. Implies
-//!   `documents`; links no HTTP stack.
+//!   `documents`; it includes source validation and placement support but no
+//!   HTTP client.
 //! - `sources-network` — the GitHub, RSS and web-page readers, `fetch`,
 //!   `readers::reader_for_request` and the SSRF guard. Without it, a host that
 //!   only reads local sources links no HTTP stack.
+//! - `schema` — JSON Schema derives for source configuration and reader types;
+//!   downstream hosts enable it only when they generate schemas.
 
 pub mod error;
 #[cfg(feature = "sources-network")]
 pub mod fetch;
 pub mod items;
 pub mod readers;
+pub mod spec;
+pub mod state;
 pub mod sync;
 pub mod types;
 
@@ -74,4 +82,9 @@ pub const FOLDER_FILE_SIZE_CAP_BYTES: u64 = 10 * 1024 * 1024;
 
 pub use error::{Error, Result};
 pub use items::{Collected, collect_items, content_item, conversation_item, file_item};
-pub use types::{ContentType, MemorySourceEntry, SourceContent, SourceItem, SourceKind};
+pub use spec::{SourceSpec, layout_of, layout_of_source};
+pub use state::{SourceState, SourceStatus, reset_interrupted};
+pub use types::{
+    ContentType, MemorySourceConfig, MemorySourceEntry, MemorySourceKind, SourceContent,
+    SourceItem, SourceKind,
+};

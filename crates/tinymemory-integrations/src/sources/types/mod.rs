@@ -14,6 +14,7 @@
 //! Wire strings are snake_case and are part of the persisted contract — do not
 //! rename them when porting from OpenHuman.
 
+#[cfg(feature = "schema")]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -28,7 +29,8 @@ pub(crate) fn default_true() -> bool {
 /// The wire representation is snake_case (`github_repo`, `rss_feed`, …) and is
 /// persisted by hosts; it must stay stable across versions. Each maps
 /// onto one [`tinymemory_api::SourceKind`] through [`SourceKind::api_kind`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum SourceKind {
     /// Local agent conversation transcripts stored in the workspace.
@@ -86,12 +88,98 @@ impl SourceKind {
     }
 }
 
+/// The kinds accepted by OpenHuman's `[[memory.sources]]` configuration.
+///
+/// This is narrower than [`SourceKind`]: conversation sources are a reader
+/// capability, not a user-configured source. The snake_case names are stable
+/// persisted values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum MemorySourceKind {
+    /// A local directory, walked recursively.
+    Folder,
+    /// One local file.
+    File,
+    /// One web page.
+    Link,
+    /// A GitHub repository (`owner/repo` or URL).
+    Github,
+    /// An RSS or Atom feed.
+    Rss,
+}
+
+impl MemorySourceKind {
+    /// Every configured kind, in display order.
+    pub const ALL: [Self; 5] = [
+        Self::Folder,
+        Self::File,
+        Self::Link,
+        Self::Github,
+        Self::Rss,
+    ];
+
+    /// The stable wire name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Folder => "folder",
+            Self::File => "file",
+            Self::Link => "link",
+            Self::Github => "github",
+            Self::Rss => "rss",
+        }
+    }
+
+    /// Parses a wire name, ignoring surrounding whitespace and ASCII case.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|kind| kind.as_str().eq_ignore_ascii_case(raw.trim()))
+    }
+
+    /// The API source kind emitted by this configured reader.
+    #[must_use]
+    pub fn source_kind(self) -> tinymemory_api::SourceKind {
+        match self {
+            Self::Folder => tinymemory_api::SourceKind::Folder,
+            Self::File => tinymemory_api::SourceKind::File,
+            Self::Link => tinymemory_api::SourceKind::Link,
+            Self::Github => tinymemory_api::SourceKind::Github,
+            Self::Rss => tinymemory_api::SourceKind::Rss,
+        }
+    }
+}
+
+/// One configured source and its schedule, without runtime sync state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct MemorySourceConfig {
+    /// Stable id.
+    pub id: String,
+    /// What the source reads.
+    pub kind: MemorySourceKind,
+    /// Path, URL, `owner/repo` or feed URL.
+    pub target: String,
+    /// Display label; missing labels default to the empty string on the wire.
+    #[serde(default)]
+    pub label: String,
+    /// Minutes between scheduled syncs; unset means on demand only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schedule_mins: Option<u32>,
+    /// Optional namespace root for this source's documents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
+}
+
 /// A configured memory source entry.
 ///
 /// All kind-specific fields are flattened onto the struct as `Option`s. The
 /// [`kind`](MemorySourceEntry::kind) discriminator determines which fields are
 /// required; [`MemorySourceEntry::validate`] checks them.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct MemorySourceEntry {
     /// Stable unique id (e.g. `src_<uuid>`).
     pub id: String,
@@ -227,7 +315,8 @@ fn require_field(value: &Option<String>, name: &str) -> Result<()> {
 ///
 /// `id` is reader-scoped (e.g. a folder-relative path or a thread id) and is
 /// stable enough to pass back into `SourceReader::read_item`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct SourceItem {
     /// Reader-scoped item id.
     pub id: String,
@@ -239,7 +328,8 @@ pub struct SourceItem {
 }
 
 /// The rendered content type of a [`SourceContent`] body.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ContentType {
     /// Markdown body.
@@ -251,7 +341,8 @@ pub enum ContentType {
 }
 
 /// Content read from a single source item.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
 pub struct SourceContent {
     /// Reader-scoped item id (matches the [`SourceItem::id`] it was read from).
     pub id: String,

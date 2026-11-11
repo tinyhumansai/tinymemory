@@ -200,13 +200,17 @@ Recall builds a pack, asks the answer route **once** with `use_pack_id`
    inherits, every ancestor; below it too for a subtree reach), or, with **no reach** (an
    unscoped, administrative read), every kind scope the engine holds
    (`v1/scopes/list`). No scope to read (nothing held, or a filter that
-   admits no kinds) answers empty without a request. Then one pack per scope,
-   built four at a time, exact (`view: "granular"`, never server-side
+   admits no kinds) answers empty without a request. Then one broad pack per
+   scope, plus a channel-specific supplemental pack when the filter has a
+   channel, built four requests at a time, exact (`view: "granular"`, never server-side
    traversal), so a sibling agent's scope is never in a pack and no pack is a
    parent scope's storage-order sample. Scopes are ordered most specific node
    first.
 2. Each pack's events budget is `2 * limit`, with the derived layers sharing
-   `limit` (see [the wire](cortex-wire.md#recall-recall)).
+   `limit` (see [the wire](cortex-wire.md#recall-recall)). The broad pack is
+   retained so channel records written before lookup labels existed remain
+   visible; the supplemental pack moves newly labelled matches ahead of the
+   server's top-k cutoff.
 3. Decode and filter each pack's events with the full `MetaFilter` (reach
    included), and drop the turns `exclude_thread` covers. The exclusion
    reaches the **citations only**: CortexDB writes the answer text from the

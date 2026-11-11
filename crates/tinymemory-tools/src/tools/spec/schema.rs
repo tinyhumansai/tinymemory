@@ -4,21 +4,14 @@
 //! Every object sets `additionalProperties: false`, and no schema has a
 //! `namespace` or `reach` property: those are fixed by the host.
 
+pub(crate) use crate::ops::DEFAULT_LEARNING_CONFIDENCE as DEFAULT_CONFIDENCE;
+pub(crate) use crate::ops::{DEFAULT_BUCKETS, DEFAULT_LIMIT, MAX_BUCKETS, MAX_LIMIT};
 use serde_json::{Map, Value, json};
 use tinymemory_api::explore::MAX_GET_IDS;
 use tinymemory_api::{FetchMode, ItemKind, SourceKind};
 
-/// The `limit` a read uses when the model passes none.
-pub(crate) const DEFAULT_LIMIT: usize = 10;
-
-/// The largest `limit` a read accepts.
-pub(crate) const MAX_LIMIT: usize = 50;
-
 /// The most ids one `memory_get` or `memory_forget` call names.
 pub(crate) const MAX_IDS: usize = MAX_GET_IDS;
-
-/// A learning's confidence when the model gives none.
-pub(crate) const DEFAULT_CONFIDENCE: f32 = 0.8;
 
 /// A learning's kind when the model gives none.
 pub(crate) const DEFAULT_LEARNING_KIND: &str = "fact";
@@ -153,7 +146,10 @@ pub(crate) fn explore() -> Value {
                 }),
             ),
             ("filter", filter()),
-            ("limit", limit("Most values to return.", DEFAULT_LIMIT)),
+            (
+                "limit",
+                limit_between("Most values to return.", DEFAULT_BUCKETS, MAX_BUCKETS),
+            ),
         ],
         &["facet"],
     )
@@ -386,10 +382,14 @@ fn ids(description: &str) -> Value {
 }
 
 fn limit(description: &str, default: usize) -> Value {
+    limit_between(description, default, MAX_LIMIT)
+}
+
+fn limit_between(description: &str, default: usize, maximum: usize) -> Value {
     json!({
         "type": "integer",
         "minimum": 1,
-        "maximum": MAX_LIMIT,
+        "maximum": maximum,
         "default": default,
         "description": description,
     })

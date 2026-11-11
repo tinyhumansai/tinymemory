@@ -1,4 +1,4 @@
-//! Tests for the office converter: PDF, DOCX, PPTX and XLSX to markdown.
+//! Tests for the office converter: PDF, DOCX and PPTX conversion plus explicit XLSX refusal.
 //!
 //! Every fixture is built here rather than checked in, so each test says what
 //! it is asserting about instead of pointing at an opaque binary.
@@ -21,6 +21,18 @@ fn package(parts: &[(&str, &str)]) -> Vec<u8> {
     }
     writer.finish().unwrap();
     buffer.into_inner()
+}
+
+/// A zip whose central-directory slide name length points past the archive.
+fn package_with_invalid_central_name_length() -> Vec<u8> {
+    let mut bytes = package(&[("ppt/slides/slide1.xml", "<p:sld/> ")]);
+    let central = bytes
+        .windows(4)
+        .position(|window| window == b"PK\x01\x02")
+        .unwrap();
+    // The central directory stores the file-name byte length at offset 28.
+    bytes[central + 28..central + 30].copy_from_slice(&u16::MAX.to_le_bytes());
+    bytes
 }
 
 /// A Word document whose body is `paragraphs`, each a list of text runs.
@@ -63,11 +75,7 @@ fn pptx(slides: &[(u32, &str)]) -> Vec<u8> {
     package(&borrowed)
 }
 
-/// A minimal XLSX archive from a worksheet's `sheetData` fragment.
-///
-/// The parts are the smallest set calamine's Xlsx reader accepts: the
-/// content-type map, the root and workbook relationships, and the workbook
-/// itself. No shared strings or styles, which the reader tolerates.
+/// A minimal XLSX-shaped archive from a worksheet's `sheetData` fragment.
 fn xlsx_with_sheet(sheet_data: &str) -> Vec<u8> {
     let content_types = r#"<?xml version="1.0"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -173,11 +181,10 @@ async fn refusal(name: &str, bytes: Vec<u8>) -> String {
 }
 
 #[test]
-fn it_claims_the_four_office_formats_and_nothing_else() {
+fn it_claims_supported_office_formats_but_not_xlsx() {
     for format in [
         DocumentFormat::Pdf,
         DocumentFormat::Docx,
-        DocumentFormat::Xlsx,
         DocumentFormat::Pptx,
     ] {
         assert!(OfficeConverter.supports(format), "{format}");
@@ -190,6 +197,7 @@ fn it_claims_the_four_office_formats_and_nothing_else() {
     ] {
         assert!(!OfficeConverter.supports(format), "{format}");
     }
+    assert!(!OfficeConverter.supports(DocumentFormat::Xlsx));
 }
 
 #[tokio::test]
@@ -229,29 +237,37 @@ async fn a_deck_reads_its_slides_in_numeric_order() {
 }
 
 #[tokio::test]
-async fn a_small_spreadsheet_yields_one_line_per_row() {
-    // The dense-range guard must not refuse ordinary files, and the concrete
-    // (non-auto) Xlsx open must not either.
+async fn a_deck_refuses_malformed_central_directory_entry_metadata() {
+    let reason = refusal("deck.pptx", package_with_invalid_central_name_length()).await;
+    assert!(reason.contains("not a readable archive"), "{reason}");
+}
+
+#[tokio::test]
+async fn spreadsheet_import_is_temporarily_disabled_with_a_helpful_error() {
+    // Keep format recognition intact, but reject before parsing workbook XML.
     let bytes = xlsx_with_sheet(
         r#"<row r="1"><c r="A1"><v>1</v></c><c r="B1"><v>alpha</v></c></row>
            <row r="2"><c r="A2"><v>2</v></c><c r="B2"><v>beta</v></c></row>"#,
     );
-    let converted = convert("ledger.xlsx", bytes).await.unwrap();
-    assert_eq!(converted.markdown, "Sheet1 | 1 | alpha\nSheet1 | 2 | beta");
-    assert_eq!(converted.format, DocumentFormat::Xlsx);
+    let reason = refusal("ledger.xlsx", bytes).await;
+    assert!(
+        reason.contains("spreadsheet import is temporarily disabled"),
+        "{reason}"
+    );
 }
 
 #[tokio::test]
-async fn a_spreadsheet_with_far_cells_is_refused_not_allocated() {
-    // One cell at `A1` and one at `XFD1048576` passes the decompression cap
-    // (the archive is a few hundred bytes) yet would make calamine
-    // materialize a ~17-billion-cell dense grid. Refused before that.
+async fn a_spreadsheet_is_disabled_even_when_its_cells_are_far_apart() {
+    // Rejection must happen before a parser could materialize the used range.
     let bytes = xlsx_with_sheet(
         r#"<row r="1"><c r="A1"><v>1</v></c></row>
            <row r="1048576"><c r="XFD1048576"><v>2</v></c></row>"#,
     );
     let reason = refusal("spread.xlsx", bytes).await;
-    assert!(reason.contains("used range"), "{reason}");
+    assert!(
+        reason.contains("spreadsheet import is temporarily disabled"),
+        "{reason}"
+    );
 }
 
 #[tokio::test]
@@ -270,11 +286,14 @@ async fn an_overexpanding_document_is_refused_not_allocated() {
 }
 
 #[tokio::test]
-async fn an_overexpanding_spreadsheet_is_refused_before_calamine_opens_it() {
+async fn an_overexpanding_spreadsheet_is_disabled_before_archive_parsing() {
     let zeroes = "\0".repeat(MAX_DECOMPRESSED_BYTES as usize + 1);
     let bytes = package(&[("xl/workbook.xml", &zeroes)]);
     let reason = refusal("bomb.xlsx", bytes).await;
-    assert!(reason.contains("expands"), "{reason}");
+    assert!(
+        reason.contains("spreadsheet import is temporarily disabled"),
+        "{reason}"
+    );
 }
 
 #[tokio::test]
@@ -379,7 +398,7 @@ fn the_blocking_entry_point_converts_without_a_runtime() {
 }
 
 #[tokio::test]
-async fn prepended_to_the_default_chain_it_covers_every_format() {
+async fn prepended_to_the_default_chain_it_covers_supported_formats() {
     let chain = ConverterChain::default().prepend(Box::new(OfficeConverter));
     assert_eq!(
         chain.supported_formats(),
@@ -390,18 +409,37 @@ async fn prepended_to_the_default_chain_it_covers_every_format() {
             DocumentFormat::Code,
             DocumentFormat::Pdf,
             DocumentFormat::Docx,
-            DocumentFormat::Xlsx,
             DocumentFormat::Pptx,
         ]
     );
-    // An unlabelled workbook routes by its parts to the office converter,
-    // and markdown still goes to the native one behind it.
+    // An unlabelled workbook is recognized and refused, while markdown still
+    // goes to the native converter behind it.
     let workbook = xlsx_with_sheet(r#"<row r="1"><c r="A1"><v>7</v></c></row>"#);
-    let converted = chain.convert(&RawDocument::new(workbook)).await.unwrap();
-    assert_eq!(converted.markdown, "Sheet1 | 7");
+    let error = chain
+        .convert(&RawDocument::new(workbook))
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("spreadsheet import is temporarily disabled"),
+        "{error}"
+    );
     let notes = chain
         .convert(&RawDocument::new("# Notes").with_filename("notes.md"))
         .await
         .unwrap();
     assert_eq!(notes.metadata["converter"], "native");
+}
+
+#[tokio::test]
+async fn csv_plaintext_stays_with_the_native_converter() {
+    let chain = ConverterChain::default().prepend(Box::new(OfficeConverter));
+    let converted = chain
+        .convert(&RawDocument::new("name,amount\nAda,3\n").with_filename("ledger.csv"))
+        .await
+        .unwrap();
+    assert_eq!(converted.format, DocumentFormat::PlainText);
+    assert_eq!(converted.markdown, "name,amount\nAda,3\n");
+    assert_eq!(converted.metadata["converter"], "native");
 }

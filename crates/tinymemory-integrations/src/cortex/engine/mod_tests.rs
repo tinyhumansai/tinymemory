@@ -225,6 +225,216 @@ async fn an_unscoped_recall_packs_each_held_scope_exactly_and_answers_once() {
 }
 
 #[tokio::test]
+async fn recall_applies_channel_before_the_pack_event_budget() {
+    for (engine, state) in both().await {
+        let workspace = "/tmp/channel-recall-budget";
+        let marker = "shared-channel-recall-marker";
+        let metadata = |channel: &str| MemoryMeta {
+            workspace: Some(workspace.to_string()),
+            channel: Some(channel.to_string()),
+            ..MemoryMeta::default()
+        };
+        let wanted = StoreItem::document(format!("{marker} wanted item"), metadata("wanted"));
+        let wanted_id = wanted.fingerprint();
+        engine.store(wanted).await.unwrap();
+
+        // A one-citation pack budgets two events. Put two equally relevant
+        // items from another channel after the wanted item so top-k recall
+        // returns those two first unless the channel label narrows the server
+        // request before it applies that budget.
+        for index in 0..2 {
+            engine
+                .store(StoreItem::document(
+                    format!("{marker} other item {index}"),
+                    metadata("other"),
+                ))
+                .await
+                .unwrap();
+        }
+
+        state.seen.lock().unwrap().recalls.clear();
+        let mut request = RecallRequest::new(marker, 1);
+        request.filter = MetaFilter {
+            workspace: Some(workspace.to_string()),
+            channel: Some("wanted".to_string()),
+            ..MetaFilter::kinds([ItemKind::Document])
+        };
+        let answer = engine.recall(request).await.unwrap();
+        assert_eq!(
+            answer
+                .citations
+                .iter()
+                .map(|citation| citation.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![wanted_id.as_str()],
+            "{:?}: a filtered item outside the unfiltered pack's top two is still recalled",
+            engine.wire()
+        );
+        let mut evidence_request = RecallRequest::new(marker, 1);
+        evidence_request.mode = tinymemory_api::RecallMode::Evidence;
+        evidence_request.filter = MetaFilter {
+            workspace: Some(workspace.to_string()),
+            channel: Some("wanted".to_string()),
+            ..MetaFilter::kinds([ItemKind::Document])
+        };
+        let evidence = engine.recall(evidence_request).await.unwrap();
+        assert_eq!(
+            evidence
+                .citations
+                .iter()
+                .map(|citation| citation.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![wanted_id.as_str()],
+            "{:?}: Evidence mode also supplements the broad pack before top-k",
+            engine.wire()
+        );
+        let mut fetch = FetchRequest::new(marker, FetchMode::Hybrid, 1);
+        fetch.filter = MetaFilter {
+            workspace: Some(workspace.to_string()),
+            channel: Some("wanted".to_string()),
+            ..MetaFilter::kinds([ItemKind::Document])
+        };
+        let fetched = engine.fetch(fetch).await.unwrap();
+        assert_eq!(
+            fetched
+                .hits
+                .iter()
+                .map(|hit| hit.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![wanted_id.as_str()],
+            "{:?}: fetch also supplements its broad pack with the channel pack",
+            engine.wire()
+        );
+        let seen = state.seen.lock().unwrap();
+        let filters: Vec<_> = seen
+            .recalls
+            .iter()
+            .filter_map(|body| body.pointer("/filters/metadata/labels"))
+            .filter_map(serde_json::Value::as_array)
+            .collect();
+        assert!(
+            filters.iter().any(|labels| labels.iter().any(|label| {
+                label
+                    .as_str()
+                    .is_some_and(|label| label.starts_with("tm:w:"))
+            })),
+            "{:?}: the broad workspace pack is retained for legacy records: {filters:?}",
+            engine.wire()
+        );
+        assert!(
+            filters.iter().any(|labels| labels.iter().any(|label| {
+                label
+                    .as_str()
+                    .is_some_and(|label| label.starts_with("tm:cw:"))
+            })),
+            "{:?}: a channel/workspace pack narrows newly labelled records: {filters:?}",
+            engine.wire()
+        );
+    }
+}
+
+#[tokio::test]
+async fn channel_filters_keep_mixed_legacy_items_without_channel_labels() {
+    for (engine, state) in both().await {
+        let workspace = "mixed-channel-label-versions";
+        let meta = || MemoryMeta {
+            workspace: Some(workspace.to_string()),
+            channel: Some("support".to_string()),
+            ..MemoryMeta::default()
+        };
+        let legacy_text = "legacy channel item";
+        let legacy = StoreItem::document(legacy_text, meta());
+        let legacy_id = legacy.fingerprint();
+        engine.store(legacy).await.unwrap();
+
+        // A v3 envelope written before channel lookup labels were introduced
+        // still has the channel in its envelope metadata, but only carries
+        // the older item/workspace labels.
+        {
+            let mut log = state.log.lock().unwrap();
+            let event = log
+                .events
+                .iter_mut()
+                .find(|event| {
+                    event
+                        .pointer("/content/text")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(legacy_text)
+                })
+                .expect("the legacy fixture was stored");
+            event["context"]["labels"] = serde_json::Value::Array(
+                event["context"]["labels"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|label| {
+                        !label.as_str().is_some_and(|label| {
+                            label.starts_with("tm:c:") || label.starts_with("tm:cw:")
+                        })
+                    })
+                    .cloned()
+                    .collect(),
+            );
+        }
+
+        let current = StoreItem::document("current channel item", meta());
+        let current_id = current.fingerprint();
+        engine.store(current).await.unwrap();
+        engine
+            .store(StoreItem::document(
+                "other channel item",
+                MemoryMeta {
+                    workspace: Some(workspace.to_string()),
+                    channel: Some("other".to_string()),
+                    ..MemoryMeta::default()
+                },
+            ))
+            .await
+            .unwrap();
+
+        let filter = MetaFilter {
+            workspace: Some(workspace.to_string()),
+            channel: Some("support".to_string()),
+            ..MetaFilter::kinds([ItemKind::Document])
+        };
+        let listed = engine
+            .list(ListRequest::new(filter.clone(), 10))
+            .await
+            .unwrap();
+        let mut actual: Vec<String> = listed
+            .items
+            .iter()
+            .map(|hit| hit.id.as_str().to_string())
+            .collect();
+        actual.sort();
+        let mut expected = vec![legacy_id, current_id];
+        expected.sort();
+        assert_eq!(
+            actual,
+            expected,
+            "{:?}: channel narrowing must retain readable pre-label records",
+            engine.wire()
+        );
+
+        let mut request = RecallRequest::new("channel item", 2);
+        request.filter = filter;
+        let answer = engine.recall(request).await.unwrap();
+        let mut citations: Vec<String> = answer
+            .citations
+            .iter()
+            .map(|citation| citation.id.as_str().to_string())
+            .collect();
+        citations.sort();
+        assert_eq!(
+            citations,
+            expected,
+            "{:?}: a broad legacy pack keeps old channel items readable beside newly labelled ones",
+            engine.wire()
+        );
+    }
+}
+
+#[tokio::test]
 async fn recall_over_one_kind_uses_that_kind_scope() {
     for (engine, state) in both().await {
         let mut req = RecallRequest::new("anything", 3);
@@ -387,9 +597,48 @@ async fn an_accepted_batch_returns_without_waiting_to_be_listed() {
         let wanted: Vec<String> = items().iter().map(StoreItem::fingerprint).collect();
         assert_eq!(ids, wanted, "{wire:?}: a receipt per item, in order");
         let polled = listings(&state) - before;
+        assert_eq!(
+            polled,
+            items().len() + 1,
+            "{wire:?}: one lookup per scope plus the conversation's legacy thread scan, no visibility polling"
+        );
+        let requests = state.requests();
+        let read_requests: Vec<_> = requests
+            .iter()
+            .enumerate()
+            .filter(|(_, request)| {
+                request.starts_with("GET /v1/events") || request.starts_with("GET /memory/events")
+            })
+            .collect();
+        let first_write = requests
+            .iter()
+            .position(|request| {
+                request.starts_with("POST /v1/experience")
+                    || request.starts_with("POST /memory/experience")
+            })
+            .unwrap();
+        assert!(read_requests.iter().all(|(index, _)| *index < first_write));
+        for item in items() {
+            let item_digest = crate::cortex::envelope::labels::digest(&item.fingerprint());
+            let scope = crate::cortex::envelope::scope_path(&item.meta().namespace, item.kind());
+            let encoded_scope = crate::cortex::transport::urlencode(&scope);
+            assert!(
+                read_requests.iter().any(|(_, request)| {
+                    request.contains(&item_digest)
+                        && request.contains(&format!("scope={encoded_scope}"))
+                }),
+                "{wire:?}: current id queried in its own scope: {scope}"
+            );
+        }
+        let thread_scope = crate::cortex::transport::urlencode(
+            &crate::cortex::envelope::scope_path(&items()[1].meta().namespace, items()[1].kind()),
+        );
         assert!(
-            polled <= items().len(),
-            "{wire:?}: only the replay lookups (one per scope), no visibility polling: {polled}"
+            read_requests.iter().any(|(_, request)| {
+                request.contains(&crate::cortex::envelope::labels::digest("t-chat"))
+                    && request.contains(&format!("scope={thread_scope}"))
+            }),
+            "{wire:?}: compatibility fallback is confined to the conversation scope"
         );
 
         let fresh = vec![StoreItem::document(

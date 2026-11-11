@@ -9,14 +9,16 @@
 
 use serde_json::Value;
 use tinymemory_api::{
-    Error, ExploreRequest, FetchRequest, GetRequest, Hit, ItemId, ListRequest, MemoryEngine,
-    RecallMode, RecallRequest, Result,
+    Error, ExploreRequest, FetchPage, FetchRequest, GetRequest, Hit, ItemId, ListRequest,
+    MemoryEngine, MetaFilter, RecallAnswer, RecallMode, RecallRequest, Result, ThreadWindow,
 };
 
 use super::ToolScope;
 use super::args::{Args, facet, fetch_mode, meta_filter, time_hint};
 use super::render;
-use super::spec::schema::{DEFAULT_LIMIT, MAX_IDS, MAX_LIMIT, default_mode};
+use super::spec::schema::{
+    DEFAULT_BUCKETS, DEFAULT_LIMIT, MAX_BUCKETS, MAX_IDS, MAX_LIMIT, default_mode,
+};
 use super::spec::{MEMORY_EXPLORE, MEMORY_FETCH, MEMORY_GET, MEMORY_LIST, MEMORY_RECALL};
 
 /// `memory_recall`.
@@ -29,23 +31,54 @@ pub(crate) async fn recall(
     scope: &ToolScope,
     value: &Value,
 ) -> Result<Value> {
+    let answer = recall_answer(engine, scope, value, RecallMode::Answer, None, None).await?;
+    Ok(render::recall(&answer))
+}
+
+/// Runs a recall with a caller-selected answer mode, limit and thread window.
+///
+/// # Errors
+///
+/// Invalid arguments, and the engine's own failures.
+pub(crate) async fn recall_answer(
+    engine: &dyn MemoryEngine,
+    scope: &ToolScope,
+    value: &Value,
+    mode: RecallMode,
+    limit: Option<usize>,
+    exclude_thread: Option<ThreadWindow>,
+) -> Result<RecallAnswer> {
+    recall_answer_with_filter(engine, scope, value, None, mode, limit, exclude_thread).await
+}
+
+/// Runs a recall after replacing the model-facing filter with a host-parsed
+/// filter. The scope's reach remains authoritative.
+pub(crate) async fn recall_answer_with_filter(
+    engine: &dyn MemoryEngine,
+    scope: &ToolScope,
+    value: &Value,
+    filter: Option<MetaFilter>,
+    mode: RecallMode,
+    limit: Option<usize>,
+    exclude_thread: Option<ThreadWindow>,
+) -> Result<RecallAnswer> {
     let args = Args::parse(
         MEMORY_RECALL,
         value,
         &["question", "filter", "limit", "instructions", "refers_to"],
     )?;
-    let mut filter = meta_filter(&args, "filter")?;
+    let mut filter = filter.unwrap_or(meta_filter(&args, "filter")?);
     scope.confine(&mut filter);
     let request = RecallRequest {
         question: args.required_string("question")?,
         filter,
-        limit: args.count("limit", DEFAULT_LIMIT, MAX_LIMIT)?,
+        limit: limit.unwrap_or(args.count("limit", DEFAULT_LIMIT, MAX_LIMIT)?),
         instructions: args.string("instructions")?,
         refers_to: time_hint(&args, "refers_to", scope)?,
-        exclude_thread: None,
-        mode: RecallMode::Answer,
+        exclude_thread,
+        mode,
     };
-    Ok(render::recall(&engine.recall(request).await?))
+    engine.recall(request).await
 }
 
 /// `memory_fetch`.
@@ -60,8 +93,54 @@ pub(crate) async fn fetch(
     scope: &ToolScope,
     value: &Value,
 ) -> Result<Value> {
+    let page = fetch_page(engine, scope, value, None, None).await?;
+    Ok(render::fetch(&page))
+}
+
+/// Runs a fetch with an optional fixed page size and thread window.
+///
+/// # Errors
+///
+/// When the engine has no fetch mode, arguments are invalid, or the engine
+/// returns an error.
+pub(crate) async fn fetch_page(
+    engine: &dyn MemoryEngine,
+    scope: &ToolScope,
+    value: &Value,
+    limit: Option<usize>,
+    exclude_thread: Option<ThreadWindow>,
+) -> Result<FetchPage> {
+    fetch_page_inner(engine, scope, value, None, limit, exclude_thread, false).await
+}
+
+/// Runs the single-name fetch with a full API filter parsed by the caller.
+pub(crate) async fn fetch_page_first_with_filter(
+    engine: &dyn MemoryEngine,
+    scope: &ToolScope,
+    value: &Value,
+    filter: Option<MetaFilter>,
+    limit: Option<usize>,
+    exclude_thread: Option<ThreadWindow>,
+) -> Result<FetchPage> {
+    fetch_page_inner(engine, scope, value, filter, limit, exclude_thread, true).await
+}
+
+async fn fetch_page_inner(
+    engine: &dyn MemoryEngine,
+    scope: &ToolScope,
+    value: &Value,
+    filter: Option<MetaFilter>,
+    limit: Option<usize>,
+    exclude_thread: Option<ThreadWindow>,
+    first_declared_default: bool,
+) -> Result<FetchPage> {
     let modes = &engine.descriptor().fetch_modes;
-    let Some(default) = default_mode(modes) else {
+    let default = if first_declared_default {
+        modes.first().copied()
+    } else {
+        default_mode(modes)
+    };
+    let Some(default) = default else {
         return Err(Error::Unsupported(format!(
             "{MEMORY_FETCH}: engine `{}` serves no fetch mode",
             engine.descriptor().id
@@ -72,20 +151,20 @@ pub(crate) async fn fetch(
         value,
         &["query", "mode", "filter", "limit", "cursor", "refers_to"],
     )?;
-    let mut filter = meta_filter(&args, "filter")?;
+    let mut filter = filter.unwrap_or(meta_filter(&args, "filter")?);
     scope.confine(&mut filter);
     let request = FetchRequest {
         query: args.required_string("query")?,
         mode: fetch_mode(&args, "mode", modes, default)?,
         filter,
-        limit: args.count("limit", DEFAULT_LIMIT, MAX_LIMIT)?,
+        limit: limit.unwrap_or(args.count("limit", DEFAULT_LIMIT, MAX_LIMIT)?),
         cursor: args.string("cursor")?,
         beliefs: 0,
         refers_to: time_hint(&args, "refers_to", scope)?,
         max_scopes: None,
-        exclude_thread: None,
+        exclude_thread,
     };
-    Ok(render::fetch(&engine.fetch(request).await?))
+    engine.fetch(request).await
 }
 
 /// `memory_list`.
@@ -143,7 +222,7 @@ pub(crate) async fn explore(
     let args = Args::parse(MEMORY_EXPLORE, value, &["facet", "filter", "limit"])?;
     let mut request = ExploreRequest::new(
         facet(&args, "facet")?,
-        args.count("limit", DEFAULT_LIMIT, MAX_LIMIT)?,
+        args.count("limit", DEFAULT_BUCKETS, MAX_BUCKETS)?,
     );
     request.filter = meta_filter(&args, "filter")?;
     scope.confine(&mut request.filter);

@@ -19,6 +19,17 @@ fn queue() -> JobQueue<MemoryQueueStore> {
     JobQueue::new(MemoryQueueStore::default())
 }
 
+#[test]
+fn selection_from_id_uses_all_for_missing_or_blank_ids_and_preserves_nonblank_bytes() {
+    assert_eq!(Selection::from_id(None), Selection::All);
+    assert_eq!(Selection::from_id(Some(String::new())), Selection::All);
+    assert_eq!(Selection::from_id(Some(" \t\n ".into())), Selection::All);
+    assert_eq!(
+        Selection::from_id(Some(" job-7 ".into())),
+        Selection::One(" job-7 ".into())
+    );
+}
+
 #[tokio::test]
 async fn duplicates_merge_and_the_queue_survives_a_reload() {
     let store = Arc::new(MemoryQueueStore::default());
@@ -147,4 +158,23 @@ async fn history_keeps_the_newest_runs_only() {
         queue.run(reference(), Selection::All, 0).await.unwrap();
     }
     assert_eq!(queue.snapshot().await.history.len(), MAX_HISTORY);
+}
+
+/// A hosted `*_PLAN_REQUIRED` refusal arrives as `Engine` and refuses every
+/// request on the account, so a job must keep its attempts while the account
+/// lacks the plan; otherwise every queued belief build is dropped after
+/// `MAX_ATTEMPTS` runs.
+#[tokio::test]
+async fn a_plan_refusal_never_uses_up_a_jobs_attempts() {
+    let queue = queue();
+    queue.enqueue(&Namespace::ROOT, vec![build("a")]).await;
+    let engine: Arc<dyn MemoryEngine> = Arc::new(RefusingEngine::with(
+        tinymemory_api::Error::Engine("[MEMORY_PLAN_REQUIRED] not in the plan".into()),
+    ));
+    for _ in 0..MAX_ATTEMPTS + 2 {
+        queue.run(engine.clone(), Selection::All, 0).await.unwrap();
+    }
+    let state = queue.snapshot().await;
+    assert_eq!(state.pending.len(), 1, "the job waits for the plan");
+    assert_eq!(state.pending[0].attempts, 0);
 }

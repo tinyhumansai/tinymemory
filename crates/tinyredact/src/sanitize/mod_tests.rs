@@ -158,3 +158,44 @@ fn sanitize_text_leaves_bearer_prose_alone() {
     assert_eq!(sanitized.value, prose);
     assert!(!sanitized.report.changed());
 }
+
+#[test]
+fn sanitize_text_redacts_json_quoted_credentials_in_prose() {
+    let input = r#"cfg {"password": "hunter2", "api_key":"abcd1234"}"#;
+    let survived: Vec<_> = [
+        ("corroborated", sanitize_text(input)),
+        ("default", sanitize_text_with(input, Policy::default())),
+    ]
+    .into_iter()
+    .filter(|(_, out)| out.value.contains("hunter2") || out.value.contains("abcd1234"))
+    .map(|(policy, out)| format!("{policy}: {:?}", out.value))
+    .collect();
+    assert!(survived.is_empty(), "credential survived: {survived:?}");
+}
+
+#[test]
+fn sanitize_text_redacts_prefixed_env_style_credentials() {
+    let input = "DB_PASSWORD=hunter2\nSTRIPE_SECRET=abcd1234\nGITHUB_TOKEN=zyxw9876";
+    let survived: Vec<_> = [
+        ("corroborated", sanitize_text(input)),
+        ("default", sanitize_text_with(input, Policy::default())),
+    ]
+    .into_iter()
+    .filter(|(_, out)| {
+        ["hunter2", "abcd1234", "zyxw9876"]
+            .iter()
+            .any(|s| out.value.contains(s))
+    })
+    .map(|(policy, out)| format!("{policy}: {:?}", out.value))
+    .collect();
+    assert!(survived.is_empty(), "credential survived: {survived:?}");
+}
+
+#[test]
+fn sanitize_text_leaves_credential_lookalike_names_alone() {
+    let input =
+        "token_count=5 max_tokens: 10 tokenizer=x password_reset_sent: true secret_santa=bob";
+    let sanitized = sanitize_text(input);
+    assert_eq!(sanitized.value, input);
+    assert!(!sanitized.report.changed());
+}

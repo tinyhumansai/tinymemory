@@ -116,6 +116,17 @@ pub enum ImportError {
     NothingToRetry,
 }
 
+/// What an interrupted import tick may resume.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumePlan {
+    /// No persisted state is currently eligible for an automatic resume.
+    DoNotResume,
+    /// Resume the legacy-store import from its saved checkpoint.
+    ResumeImport,
+    /// Resume retrying the persisted failed-item list.
+    ResumeRetry,
+}
+
 /// A run that has begun: the state it marked `Running`, ready for
 /// [`Importer::run`] or [`Importer::run_retry`].
 #[derive(Debug)]
@@ -182,6 +193,50 @@ impl Importer {
     pub fn with_describe(mut self, describe: Describe) -> Self {
         self.describe = describe;
         self
+    }
+
+    /// The pure automatic-resume decision for one saved file.
+    ///
+    /// The scheduler pause blocks every resume. A `Running` import resumes
+    /// with consent already recorded; a credits-stopped import resumes only
+    /// when billing allows it. A running retry keeps its retry mode, while a
+    /// credits-gated `Error` resumes the import checkpoint.
+    #[must_use]
+    pub fn resume_plan(file: &ImportFile, billing_ok: bool, paused: bool) -> ResumePlan {
+        if paused {
+            return ResumePlan::DoNotResume;
+        }
+        match file.state.phase {
+            ImportPhase::Running if file.retrying => ResumePlan::ResumeRetry,
+            ImportPhase::Running => ResumePlan::ResumeImport,
+            ImportPhase::Error if file.paused_for_credits && billing_ok => ResumePlan::ResumeImport,
+            _ => ResumePlan::DoNotResume,
+        }
+    }
+}
+
+/// Records that an automatic resume could not start, without requiring an
+/// engine or pacer to be constructed. The checkpoint and failed-item list
+/// remain as saved.
+///
+/// An interrupted retry becomes `Done` so the user can press Retry again; an
+/// interrupted import becomes `Error` so Resume can continue from its
+/// checkpoint.
+pub fn record_resume_failure(store: &dyn CheckpointStore, error: &str) {
+    let mut file = store.load();
+    if file.retrying {
+        file.state.phase = ImportPhase::Done;
+        file.state.error = Some(format!(
+            "the retry could not resume: {error}; press Retry again"
+        ));
+        file.retrying = false;
+    } else {
+        file.state.phase = ImportPhase::Error;
+        file.state.error = Some(format!("the import could not resume: {error}"));
+    }
+    file.paused_for_credits = false;
+    if let Err(error) = store.save(&file) {
+        log::warn!("[memory:import] writing import state failed: {error}");
     }
 }
 

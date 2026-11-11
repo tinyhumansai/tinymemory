@@ -8,7 +8,7 @@ rustdoc next to the code.
 
 | Document | Read it for |
 | --- | --- |
-| [overview.md](overview.md) | The three crates, their dependency graph, the feature map, and the end-to-end write and read paths |
+| [overview.md](overview.md) | The memory crates, standalone redaction library, dependency graph, feature map, and end-to-end write and read paths |
 | [api.md](api.md) | The core contract: the `MemoryEngine` trait, descriptor, health, errors, limits and the wire format |
 | [api-items.md](api-items.md) | Items, metadata and filters in detail: every field, validation rule and JSON shape |
 | [operations.md](operations.md) | Step-by-step semantics of store, store_many, fetch, recall, list, forget, explore and get |

@@ -14,14 +14,10 @@ use crate::import::{Checkpoint, ImportedItem};
 const UNAVAILABLE_REASON: &str =
     "the memory service is unavailable; the import resumes on its own within a few minutes";
 
-/// The hosted backend's code for an exhausted credit balance, which arrives
-/// as an `Engine` error whose message starts with `[CODE] `.
-const INSUFFICIENT_CREDITS_PREFIX: &str = "[USER_INSUFFICIENT_CREDITS] ";
-
 /// Whether `error` is the hosted backend's "not enough credits" refusal.
 #[must_use]
 pub fn is_insufficient_credits(error: &EngineError) -> bool {
-    matches!(error, EngineError::Engine(message) if message.starts_with(INSUFFICIENT_CREDITS_PREFIX))
+    matches!(error, EngineError::InsufficientCredits(_))
 }
 
 /// Whether a store failure is about the item (skip it and go on) rather than
@@ -366,19 +362,6 @@ impl Importer {
     /// retry leaves the import `Done` with its failed items, so Retry stays
     /// available.
     pub fn record_resume_failure(&self, error: &str) {
-        let mut file = self.store.load();
-        if file.retrying {
-            file.state.phase = ImportPhase::Done;
-            file.state.error = Some(format!(
-                "the retry could not resume: {error}; press Retry again"
-            ));
-            file.retrying = false;
-        } else {
-            file.state.phase = ImportPhase::Error;
-            file.state.error = Some(format!("the import could not resume: {error}"));
-        }
-        // Not resumed again on its own: the failure would recur.
-        file.paused_for_credits = false;
-        self.save(&file);
+        super::record_resume_failure(self.store.as_ref(), error);
     }
 }

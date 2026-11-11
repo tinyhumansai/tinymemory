@@ -8,9 +8,13 @@
 //! - [`is_finished`]: whether a background tick has nothing left to start.
 //! - [`record_failure`]: saves why a run stopped on an error.
 //!
-//! Running in the background (one run per workspace, a spawned task) needs an
-//! executor, which this crate does not link: the host owns that, and passes
-//! `running` in.
+//! Running in the background (one run per workspace, a spawned task) uses a
+//! host-provided [`MigrationSpawner`]; this crate links no executor.
+
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::Arc;
 
 use serde::Serialize;
 
@@ -18,6 +22,150 @@ use super::copy::legacy_present;
 use super::error::{Error, Result};
 use super::job::LayoutHost;
 use super::state::{MigrationState, Phase};
+use crate::run_slots::{RunGuard, RunSlots, StartGate};
+
+/// A migration task handed to the host's executor.
+pub type MigrationTask = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
+/// The host's executor boundary. An error means the task was not accepted;
+/// implementations must drop it before returning so its run guard releases.
+pub trait MigrationSpawner: Send + Sync {
+    /// Starts `task`, returning an error if it could not be scheduled.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description if the executor rejects the task. The task must
+    /// be dropped before this method returns an error.
+    fn spawn(&self, task: MigrationTask) -> std::result::Result<(), String>;
+}
+
+/// Run-slot registry and executor adapter for layout migration.
+///
+/// Clone and inject one [`RunSlots`] instance into every service that may
+/// start a migration for the same workspace set.
+pub struct MigrationService<G, S> {
+    slots: RunSlots<PathBuf>,
+    gate: G,
+    spawner: S,
+}
+
+impl<G, S> std::fmt::Debug for MigrationService<G, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MigrationService").finish_non_exhaustive()
+    }
+}
+
+impl<G, S> MigrationService<G, S>
+where
+    G: StartGate,
+    S: MigrationSpawner,
+{
+    /// A service sharing `slots`, using `gate` for the host's import and
+    /// migration start interlock, and `spawner` for accepted background work.
+    #[must_use]
+    pub fn new(slots: RunSlots<PathBuf>, gate: G, spawner: S) -> Self {
+        Self {
+            slots,
+            gate,
+            spawner,
+        }
+    }
+
+    /// Whether `key` currently has a migration task holding a run slot.
+    #[must_use]
+    pub fn is_running(&self, key: &Path) -> bool {
+        self.slots.is_running(&key.to_path_buf())
+    }
+
+    /// Claims the workspace and schedules a migration. `peer_running` is
+    /// checked under the common start gate, atomically with this service's
+    /// run-slot reservation.
+    pub fn start<Peer, Paused>(
+        &self,
+        key: PathBuf,
+        host: Arc<dyn LayoutHost>,
+        peer_running: Peer,
+        trigger: super::job::Trigger,
+        paused: Paused,
+    ) -> bool
+    where
+        Peer: FnOnce() -> bool,
+        Paused: Fn() -> bool + Send + Sync + 'static,
+    {
+        let mut peer_running = Some(peer_running);
+        let mut run_guard: Option<RunGuard<PathBuf>> = None;
+        let reserved = self.gate.with_gate(&mut || {
+            if run_guard.is_some() {
+                return true;
+            }
+            let Some(peer_running) = peer_running.take() else {
+                return false;
+            };
+            if peer_running() {
+                return false;
+            }
+            run_guard = self.slots.try_acquire(key.clone());
+            run_guard.is_some()
+        });
+        if !reserved {
+            return false;
+        }
+        let Some(run_guard) = run_guard else {
+            return false;
+        };
+
+        let task_host = Arc::clone(&host);
+        let task = Box::pin(async move {
+            let _run_guard = run_guard;
+            match super::job::run(task_host.as_ref(), trigger, || std::future::ready(paused()))
+                .await
+            {
+                Ok(_) => {}
+                Err(error) => record_failure(task_host.as_ref(), &error),
+            }
+        });
+        match self.spawner.spawn(task) {
+            Ok(()) => true,
+            Err(error) => {
+                record_failure(
+                    host.as_ref(),
+                    &Error::State(format!("migration task spawn failed: {error}")),
+                );
+                false
+            }
+        }
+    }
+
+    /// The background tick policy: finished, paused, already running, then
+    /// start. A run or spawn failure is recorded once by [`Self::start`].
+    pub fn tick<Peer, Paused>(
+        &self,
+        key: PathBuf,
+        host: Arc<dyn LayoutHost>,
+        peer_running: Peer,
+        paused: Paused,
+    ) -> bool
+    where
+        Peer: FnOnce() -> bool,
+        Paused: Fn() -> bool + Send + Sync + 'static,
+    {
+        match is_finished(host.as_ref()) {
+            Ok(true) => return false,
+            Ok(false) => {}
+            Err(error) => {
+                log::warn!(
+                    "[memory:layout_migration] state unreadable code={}",
+                    error.code()
+                );
+                return false;
+            }
+        }
+        if paused() || self.is_running(&key) {
+            return false;
+        }
+        self.start(key, host, peer_running, super::job::Trigger::Auto, paused)
+    }
+}
 
 /// What [`scan`] found.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -49,7 +197,7 @@ pub struct MigrationStatus {
 /// tree cannot be read.
 pub async fn scan(host: &dyn LayoutHost) -> Result<ScanView> {
     let state = host.store().load()?;
-    let claim = match host.legacy_claim() {
+    let claim = match host.legacy_claim().await {
         // Memory off or signed out: nothing to show.
         Err(Error::Off(_)) => None,
         claim => claim?,
@@ -67,7 +215,7 @@ pub async fn scan(host: &dyn LayoutHost) -> Result<ScanView> {
         {
             false
         }
-        Phase::Idle if !state.switched => match host.engines() {
+        Phase::Idle if !state.switched => match host.engines().await {
             // Memory off or signed out: nothing to show.
             Err(Error::Off(_)) => false,
             Err(error) => return Err(error),

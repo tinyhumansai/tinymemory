@@ -274,23 +274,40 @@ impl CortexEngine {
         &self,
         req: &RecallRequest,
         paths: &[String],
-    ) -> Result<(Vec<Value>, usize)> {
+    ) -> Result<(Vec<Vec<(usize, Value)>>, usize)> {
         let deadline = tokio::time::Instant::now() + self.log.timing.evidence;
-        let mut building = stream::iter(paths.iter().cloned().enumerate())
-            .map(|(index, path)| async move { (index, self.pack(req, &path).await) })
+        let requests: Vec<(usize, usize, Value)> = paths
+            .iter()
+            .enumerate()
+            .flat_map(|(scope, path)| {
+                self.pack_bodies(req, path)
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(pack, body)| (scope, pack, body))
+            })
+            .collect();
+        let pack_count = requests
+            .iter()
+            .map(|(_, pack, _)| pack + 1)
+            .max()
+            .unwrap_or(0);
+        let mut building = stream::iter(requests)
+            .map(|(scope, pack, body)| async move { (scope, pack, self.log.recall(&body).await) })
             .buffer_unordered(PACKS_AT_ONCE);
-        let mut arrived = Vec::new();
+        let mut arrived = vec![Vec::new(); paths.len()];
         while let Ok(next) = tokio::time::timeout_at(deadline, building.next()).await {
-            let Some((index, pack)) = next else { break };
-            arrived.push((index, pack?));
+            let Some((scope, pack, result)) = next else {
+                break;
+            };
+            arrived[scope].push((pack, result?));
         }
         let late: Vec<&str> = paths
             .iter()
             .enumerate()
-            .filter(|(index, _)| !arrived.iter().any(|(got, _)| got == index))
+            .filter(|(index, _)| arrived[*index].len() < pack_count)
             .map(|(_, path)| path.as_str())
             .collect();
-        if !paths.is_empty() && arrived.is_empty() {
+        if !paths.is_empty() && arrived.iter().all(Vec::is_empty) {
             return Err(Error::Unavailable(format!(
                 "no recall pack arrived within {:?}",
                 self.log.timing.evidence
@@ -305,11 +322,10 @@ impl CortexEngine {
                 late.join(", ")
             );
         }
-        arrived.sort_by_key(|(index, _)| *index);
-        Ok((
-            arrived.into_iter().map(|(_, pack)| pack).collect(),
-            late.len(),
-        ))
+        for packs in &mut arrived {
+            packs.sort_by_key(|(index, _)| *index);
+        }
+        Ok((arrived, late.len()))
     }
 
     /// See the module docs. `paths` are the kind scopes to read, most
@@ -323,11 +339,19 @@ impl CortexEngine {
         let mut facts = Vec::new();
         let mut beliefs = Vec::new();
         let mut per_pack = Vec::new();
-        for pack in &packs {
-            let gathered = gather(pack, &req.filter, req.exclude_thread.as_ref());
-            facts.extend(gathered.facts);
-            beliefs.extend(gathered.beliefs);
-            per_pack.push(gathered.events);
+        for scope_packs in &packs {
+            for (index, pack) in scope_packs {
+                let mut gathered = gather(pack, &req.filter, req.exclude_thread.as_ref());
+                // The broad pack is the canonical source for derived layers;
+                // the channel pack supplements events only.
+                if *index > 0 {
+                    gathered.facts.clear();
+                    gathered.beliefs.clear();
+                }
+                facts.extend(gathered.facts);
+                beliefs.extend(gathered.beliefs);
+                per_pack.push(gathered.events);
+            }
         }
         let events = interleave(per_pack);
         let mut answer = render(&facts, &beliefs, &events);

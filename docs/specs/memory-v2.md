@@ -23,30 +23,23 @@ a model call the same operations under a scope the host fixes (see
 
 ## Crates
 
-Three crates, one directory each under `crates/`. Their relationships are in
+Three memory crates, plus the standalone redaction crate `tinyredact`. Their relationships are in
 [`docs/architecture/overview.md`](../architecture/overview.md).
 
 | Crate | Owns |
 | --- | --- |
-| `tinymemory-api` | Pure safety vocabulary (classification/redaction behind `local-safety`) and the contract: `MemoryEngine`, request/response types, `MemoryMeta`, `MetaFilter`, namespaces, `EngineDescriptor`, `Error`. No I/O. Feature `conformance`: the behavioural suite every engine must pass, plus a reference in-memory engine. |
+| `tinymemory-api` | Pure safety vocabulary (classification/redaction behind `local-safety`) and the contract: `MemoryEngine`, request/response types, `MemoryMeta`, `MetaFilter`, namespaces, `EngineDescriptor`, `EngineStatus`, `Error`. No I/O. Feature `conformance`: the behavioural suite every engine must pass, plus a reference in-memory engine. |
 | `tinymemory-tools` | The agent tool spec `MemoryTools` (seven tools, host-fixed namespace and reach) and `context`, the `ContextCompiler` that builds `context.md` from an engine. |
-| `tinymemory-integrations` | Everything that talks to the outside world, each behind a feature: `cortex` (default; the CortexDB engine, registered twice as `cortexdb` and `tinyhumans`, plus the registry `list_engines`/`build_engine` and `MemoryConfig`), `documents` and `documents-office` (format sniffing and conversion to markdown, emitting `StoreItem::Document`; PDF/DOCX/PPTX/XLSX via `OfficeConverter` or a host `DocumentConverter`), `sources` and `sources-network` (readers for folder, file, link, GitHub, RSS and conversations, with the SSRF guard), `safety` (secret/PII scrubbing applied to every item before `store`), and `legacy-import` (reads a v1 TinyCortex workspace and migrates it into any engine). |
+| `tinymemory-integrations` | Everything that talks to the outside world, each behind a feature: `cortex` (default; the CortexDB engine, registered twice as `cortexdb` and `tinyhumans`, plus the registry `list_engines`/`build_engine` and `MemoryConfig`), `documents` and `documents-office` (format sniffing and conversion to markdown, emitting `StoreItem::Document`; PDF/DOCX/PPTX via `OfficeConverter` or a host `DocumentConverter`; XLSX remains recognized but temporarily unsupported), `sources` and `sources-network` (readers for folder, file, link, GitHub, RSS and conversations, with the SSRF guard), `safety` (secret/PII scrubbing applied to every item before `store`), and `legacy-import` (reads a v1 TinyCortex workspace and migrates it into any engine). |
+| `tinyredact` | Standalone local secret and personal identifier detection and scrubbing, usable independently of memory integrations. |
 
-Deleted: the earlier `tinymemory` facade, `tinymemory-cortex`,
-`tinymemory-documents`, `tinymemory-sources`, `tinymemory-safety`,
-`tinymemory-context`, `tinymemory-import` and `tinymemory-conformance` as
-separate crates (their code moved into the three above: the engine, registry
-and config, documents, sources, safety and import into
-`tinymemory-integrations`; context into `tinymemory-tools`; conformance into
-the `conformance` feature of `tinymemory-api`). Earlier still: `tinymemory-bus`,
-`tinymemory-core`, `tinymemory-tinycortex`, `tinymemory-remote` (CortexDB is
-the engine; mem0, supermemory, cognee, agentmemory, livingbrain are dropped),
-`tinymemory-conversations`, `tinymemory-guard`, `tinymemory-gate`,
-`tinymemory-sync` (normalisers moved into `sources`), `tinymemory-module`,
-`tinymemory-testing-ui`, and the `vendor/tinycortex`, `vendor/tinybus` and
-`vendor/tinyinference` submodules (`legacy-import` reads the v1 on-disk layout
-directly, so it needs no engine dependency). `tinymemory-conversations` (the
-chat thread store) moved to `tinyagents-session::threads` in tinyagents.
+Earlier designs split the engine, documents, sources, safety, context and
+legacy import into separate crates. That code now lives in the three memory
+crates listed above; `tinyredact` remains the separate redaction library.
+Conformance is a feature of `tinymemory-api`. The older TinyCortex engine and
+its vendor submodule are gone, but `legacy-import` still reads the v1
+TinyCortex on-disk layout directly, without an engine dependency. The former
+chat thread store now lives in `tinyagents-session::threads` in tinyagents.
 
 ## Contract (`tinymemory-api`)
 
@@ -78,6 +71,7 @@ pub trait MemoryEngine: Send + Sync {
 
 ```rust
 pub struct MemoryMeta {
+    pub namespace: Namespace,         // caller-owned memory scope
     pub workspace: Option<String>,   // absolute path or logical workspace id
     pub folder: Option<String>,      // containing folder (absolute or workspace-relative)
     pub file_path: Option<String>,
@@ -86,15 +80,27 @@ pub struct MemoryMeta {
     pub commit: Option<String>,
     pub url: Option<String>,
     pub thread_id: Option<String>,
+    pub channel: Option<String>,
     pub turns: Option<TurnRange>,    // { first: u32, last: u32 }
     pub agent_id: Option<String>,
     pub tool_call: Option<ToolCallRef>, // { name, id }
     pub source: SourceRef,           // { kind: SourceKind, id: Option<String> }
     pub tags: Vec<String>,
     pub observed_at: Option<DateTime<Utc>>,
+    pub observed_actor: Option<ObservedActor>,
 }
 pub enum SourceKind { Folder, File, Link, Github, Rss, Conversation, Agent, Import }
 ```
+
+`MemoryMeta::overlay(host)` takes set host optional fields over caller values
+and preserves optional fields the host leaves unset. The host's namespace and
+source always replace caller values, including root/default values; host tags
+append uniquely after caller tags. `ObservedActor::for_channel_sender`
+keeps the host sender identity rules in this contract: phone ids are
+`user:<dial digits>` on `whatsapp`, `signal`, `imessage`, `linq` and `sms`,
+emails on any channel are lower-cased `user:<email>`, and other senders use
+`<channel>:<sender>`. TinyMemory owns this channel vocabulary so the memory
+contract does not depend on a host channel crate.
 
 `MetaFilter` has the same optional fields (each an exact match, `folder` and
 `file_path` also match as a prefix), plus `kinds: Vec<ItemKind>`,

@@ -9,7 +9,7 @@
 //! Neither type ever prints its token: `Debug` is redacted, and the transport
 //! marks the header it builds sensitive.
 
-use std::sync::Arc;
+use std::{future::Future, sync::Arc};
 
 use async_trait::async_trait;
 
@@ -34,6 +34,48 @@ pub trait BearerSource: Send + Sync {
     /// Fails when no credential is currently available (for example the host
     /// is signed out).
     async fn bearer(&self) -> Result<String>;
+}
+
+/// A [`BearerSource`] that resolves its token by calling a host-provided
+/// callback for every request.
+///
+/// This is useful when the host owns credential refresh and wants a Cortex
+/// engine to observe the latest token without being rebuilt. The callback's
+/// errors are returned unchanged; the engine handles unavailable credentials
+/// as unauthorized and does not send a request. Neither this type nor its
+/// [`std::fmt::Debug`] output exposes the callback or any token.
+pub struct CallbackBearerSource<F> {
+    callback: F,
+}
+
+impl<F> CallbackBearerSource<F> {
+    /// Creates a callback-backed source. The callback must return an owned,
+    /// sendable future so each request can resolve independently.
+    #[must_use]
+    pub fn new<Fut>(callback: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<String>> + Send + 'static,
+    {
+        Self { callback }
+    }
+}
+
+impl<F> std::fmt::Debug for CallbackBearerSource<F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CallbackBearerSource(<callback>)")
+    }
+}
+
+#[async_trait]
+impl<F, Fut> BearerSource for CallbackBearerSource<F>
+where
+    F: Fn() -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<String>> + Send + 'static,
+{
+    async fn bearer(&self) -> Result<String> {
+        (self.callback)().await
+    }
 }
 
 /// A fixed bearer token as a [`BearerSource`]. Its `Debug` never shows the

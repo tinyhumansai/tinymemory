@@ -45,7 +45,7 @@ tinymemory-integrations = { git = "https://github.com/tinyhumansai/tinymemory", 
 | --- | --- |
 | `cortex` (default) | the CortexDB engine, both wires, plus `registry` and `config` |
 | `brain` | `brain_document`: a file converted and filed under its source |
-| `documents-office` | PDF, DOCX and XLSX conversion for the brain |
+| `documents-office` | PDF, DOCX and PPTX conversion for the brain; XLSX temporarily unsupported |
 | `full` | everything |
 
 For tests and offline development, enable `tinymemory-api`'s `conformance`

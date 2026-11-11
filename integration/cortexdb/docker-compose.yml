@@ -5,7 +5,7 @@ name: tinymemory-cortexdb
 
 services:
   cortex:
-    image: cortexdb/cortexdb:${CORTEXDB_VERSION:-v0.10.4}
+    image: ${CORTEXDB_IMAGE:-cortexdb/cortexdb@sha256:636e0ed0b8cd4ae2f307e3a90f99050f7879f73c556b1ccbbabf2d3a383398fc}
     command: ["3141", "/data"]
     environment:
       CORTEX_API_KEY: ${TINYMEMORY_TEST_CORTEX_KEY:-tinymemory-cortex-test}

@@ -13,6 +13,9 @@
 //! - **No overlap with live logging.** A thread's turns from the first one the
 //!   lifecycle logged on are already in memory; [`first_live_turn`] asks the
 //!   engine where logging began and [`pending_range`] stops short of it.
+//! - **Offline status.** [`Backfiller::status_without_engine`] reports pending
+//!   turns from the saved counters and thread source when no engine is bound;
+//!   unlike engine-backed status, it cannot query live logging cutoffs.
 //! - **Repeatable.** A re-sent item is a replay (its id is a content digest),
 //!   never a duplicate, so a host may resume from any [`pending_range`] start.
 //!
@@ -27,6 +30,13 @@ use tinymemory_api::{
 };
 
 use crate::layout::MemoryLayout;
+
+mod driver;
+
+pub use driver::{
+    BackfillFile, BackfillPhase, BackfillRun, BackfillState, BackfillView, Backfiller,
+    CounterStore, ThreadSource,
+};
 
 /// The tag every backfilled conversation item carries.
 pub const BACKFILL_TAG: &str = "backfill";

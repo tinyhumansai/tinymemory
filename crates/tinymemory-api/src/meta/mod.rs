@@ -56,6 +56,9 @@ pub struct MemoryMeta {
     /// Conversation thread the item belongs to.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_id: Option<String>,
+    /// Channel the conversation or message came from, such as `telegram`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
     /// Which turns of the thread the item covers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub turns: Option<TurnRange>,
@@ -102,6 +105,77 @@ pub struct ObservedActor {
     pub name: Option<String>,
 }
 
+impl ObservedActor {
+    /// Builds an actor from the sender of a channel message.
+    ///
+    /// Phone numbers on phone-addressed channels become `user:<dial digits>`;
+    /// email addresses become lower-cased `user:<email>` ids; other single
+    /// token senders become `<channel>:<sender>`. The supported phone channel
+    /// vocabulary is kept in this API so memory does not depend on a host's
+    /// channel runtime. A blank channel or sender, or a non-phone sender
+    /// containing whitespace, has no actor id and returns `None`.
+    #[must_use]
+    pub fn for_channel_sender(channel: &str, sender: &str, name: Option<&str>) -> Option<Self> {
+        let name = name
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string);
+        Some(Self {
+            id: channel_actor_id(channel, sender)?,
+            name,
+        })
+    }
+}
+
+/// Phone-addressed channels. This vocabulary stays local to TinyMemory to
+/// avoid a dependency from the memory contract on any channel host crate.
+const PHONE_CHANNELS: &[&str] = &["whatsapp", "signal", "imessage", "linq", "sms"];
+
+/// `user:<phone or email>` or `<channel>:<sender>`; `None` when either is
+/// blank or the sender is not one token.
+fn channel_actor_id(channel: &str, sender: &str) -> Option<String> {
+    let channel = channel.trim().to_ascii_lowercase();
+    let sender = sender.trim();
+    if channel.is_empty() || channel.contains(char::is_whitespace) || sender.is_empty() {
+        return None;
+    }
+    if PHONE_CHANNELS.contains(&channel.as_str()) && looks_like_phone(sender) {
+        return Some(format!("user:{}", dial_digits(sender)));
+    }
+    if sender.contains(char::is_whitespace) {
+        return None;
+    }
+    if is_email(sender) {
+        return Some(format!("user:{}", sender.to_ascii_lowercase()));
+    }
+    Some(format!("{channel}:{sender}"))
+}
+
+/// Only phone characters, with seven or more digits.
+fn looks_like_phone(text: &str) -> bool {
+    text.chars()
+        .all(|c| c.is_ascii_digit() || "+-(). ".contains(c))
+        && text.chars().filter(char::is_ascii_digit).count() >= 7
+}
+
+/// `text`'s digits, with its leading `+` when it has one.
+fn dial_digits(text: &str) -> String {
+    let digits: String = text.chars().filter(char::is_ascii_digit).collect();
+    if text.starts_with('+') {
+        format!("+{digits}")
+    } else {
+        digits
+    }
+}
+
+/// One `@`, a non-empty local part and a dotted domain: a WhatsApp
+/// `<lid>@lid` is not an email address.
+fn is_email(text: &str) -> bool {
+    text.split_once('@').is_some_and(|(local, domain)| {
+        !local.is_empty() && domain.contains('.') && !domain.contains('@')
+    })
+}
+
 impl MemoryMeta {
     /// Metadata naming only its source.
     #[must_use]
@@ -110,6 +184,51 @@ impl MemoryMeta {
             source: SourceRef { kind, id },
             ..Self::default()
         }
+    }
+
+    /// Overlays values known by the host onto this metadata.
+    ///
+    /// Set optional fields from `host` replace their values here. The host's
+    /// namespace and source always replace these values, including the root
+    /// namespace and default source. Host tags append after caller tags, with
+    /// duplicates omitted while preserving order.
+    #[must_use]
+    pub fn overlay(mut self, mut host: Self) -> Self {
+        macro_rules! overlay_options {
+            ($($field:ident),* $(,)?) => {
+                $(
+                    if host.$field.is_some() {
+                        self.$field = host.$field.take();
+                    }
+                )*
+            };
+        }
+
+        overlay_options!(
+            workspace,
+            folder,
+            file_path,
+            language,
+            repo,
+            commit,
+            url,
+            thread_id,
+            channel,
+            turns,
+            agent_id,
+            tool_call,
+            observed_at,
+            derive,
+            observed_actor
+        );
+        self.namespace = host.namespace;
+        self.source = host.source;
+        for tag in host.tags {
+            if !self.tags.contains(&tag) {
+                self.tags.push(tag);
+            }
+        }
+        self
     }
 }
 

@@ -8,7 +8,8 @@ against the server and not only against the HTTP doubles in
 ```sh
 ./scripts/cortexdb-live.sh                          # boot, test, tear down
 KEEP=1 ./scripts/cortexdb-live.sh                   # leave it running on :3142
-CORTEXDB_VERSION=v0.9.9 ./scripts/cortexdb-live.sh  # an older server release
+CORTEXDB_VERSION=v0.9.9 ./scripts/cortexdb-live.sh  # an explicit older release
+CORTEXDB_IMAGE=registry.example/cortexdb@sha256:... ./scripts/cortexdb-live.sh
 ```
 
 Or by hand:
@@ -28,12 +29,17 @@ The script runs its own Compose project (`tinymemory-cortexdb-test`) on port
 start when something already answers on its port, so it never replaces a
 server you started by hand (which uses the compose file's own project on
 3141).
+The lifecycle target runs its tests serially because concurrent test cases
+mutate authorization and derived-layer state on the same live CortexDB server.
+The target still runs every assertion against the real server.
 
 ## What runs
 
-- `cortex`: `cortexdb/cortexdb` pinned to `v0.10.4` (override with
-  `CORTEXDB_VERSION`), listening on `127.0.0.1:3141` (`CORTEXDB_PORT`) with the
-  static bearer `tinymemory-cortex-test` (`TINYMEMORY_TEST_CORTEX_KEY`).
+- `cortex`: `cortexdb/cortexdb` pinned to the verified v0.10.4 multi-architecture
+  digest `sha256:636e0ed0b8cd4ae2f307e3a90f99050f7879f73c556b1ccbbabf2d3a383398fc`
+  (override with `CORTEXDB_IMAGE`, or use `CORTEXDB_VERSION` in the live script),
+  listening on `127.0.0.1:3141` (`CORTEXDB_PORT`) with the static bearer
+  `tinymemory-cortex-test` (`TINYMEMORY_TEST_CORTEX_KEY`).
 - `mock-inference`: a deterministic OpenAI-compatible double
   (`mock_inference.py`) for CortexDB's embeddings, extraction and answer
   models, so the harness needs no credential. Point `CORTEX_INFERENCE_URL` and

@@ -91,8 +91,8 @@ pub use error::{Error, Result};
 pub use importer::{
     Begun, CHECKPOINT_EVERY, CheckpointStore, Consent, Describe, FailedItem, ImportCounts,
     ImportError, ImportFile, ImportPhase, ImportState, Importer, MemoryCheckpointStore, Pacer,
-    PauseCheck, RetryPolicy, STORE_BATCH, count_legacy, is_insufficient_credits, open_legacy,
-    skips_item,
+    PauseCheck, ResumePlan, RetryPolicy, STORE_BATCH, count_legacy, is_insufficient_credits,
+    open_legacy, record_resume_failure, skips_item,
 };
 pub use items::{DEFAULT_PAGE_SIZE, Items};
 pub use migrate::{MigrationReport, migrate, migrate_with};

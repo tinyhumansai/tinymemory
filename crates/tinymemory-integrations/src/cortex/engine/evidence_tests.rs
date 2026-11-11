@@ -249,3 +249,39 @@ async fn no_pack_by_the_deadline_is_unavailable_not_empty() {
     let error = engine.recall(evidence_request()).await.unwrap_err();
     assert!(matches!(error, Error::Unavailable(_)), "{error:?}");
 }
+
+#[tokio::test]
+async fn a_broad_channel_pack_is_kept_when_its_supplement_misses_the_deadline() {
+    let (endpoint, state) = direct_double().await;
+    let mut engine = direct_engine(&endpoint);
+    engine.log.timing.evidence = std::time::Duration::from_millis(300);
+    let item = StoreItem::document(
+        "helix: the broad pack still has this channel item",
+        MemoryMeta {
+            channel: Some("support".into()),
+            ..MemoryMeta::default()
+        },
+    );
+    let item_id = item.fingerprint();
+    engine.store(item).await.unwrap();
+    *state.slow_channel_recall.lock().unwrap() = Some(3_000);
+
+    let mut req = evidence_request();
+    req.filter = MetaFilter {
+        channel: Some("support".into()),
+        ..MetaFilter::kinds([ItemKind::Document])
+    };
+    let got = engine.recall(req).await.unwrap();
+    assert_eq!(
+        got.citations
+            .iter()
+            .map(|citation| citation.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![item_id.as_str()],
+    );
+    assert!(
+        got.answer.contains("only partly searched"),
+        "{}",
+        got.answer
+    );
+}

@@ -1,6 +1,6 @@
 [package]
 name = "tinyredact"
-description = "Secret and PII scrubbing: credential markers and shapes, checksum-gated national IDs, and a corroborated bare-card policy"
+description = "Secret, PII, and home-path scrubbing with credential markers and a corroborated bare-card policy"
 readme = "README.md"
 keywords = ["redaction", "pii", "secrets", "security"]
 categories = ["text-processing"]

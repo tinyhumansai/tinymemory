@@ -21,7 +21,8 @@ docs/
 - **[`integration.md`](integration.md)** — for an agent host (OpenHuman or
   any other): which calls to make around each turn, what they cost, the
   rules that keep recall accurate, and how to bring your own engine.
-- **[`architecture/`](architecture/README.md)** — the shape of the three crates:
+- **[`architecture/`](architecture/README.md)** — the shape of the memory crates
+  and the separate redaction library:
   the core contract, operation semantics, namespaces, the CortexDB engine, the
   tools, the integrations and the test strategy.
 - **[`specs/`](specs/README.md)** — one file per feature, module, or subsystem,

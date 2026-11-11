@@ -493,7 +493,7 @@ impl Envelope {
                 chunks::MAX_EVENT_TEXT_BYTES
             )));
         }
-        let mut lookup = labels::for_item(&self.id, &self.meta);
+        let mut lookup = labels::for_item(&self.id, &self.meta, self.paths.workspace.as_deref());
         lookup.extend(self.paths.workspace.as_deref().map(labels::workspace));
         let mut head = self.clone();
         head.v = V3;
@@ -513,6 +513,23 @@ impl Envelope {
             text: self.text.clone(),
             labels,
         })
+    }
+
+    /// Whether the persisted metadata describes the same fingerprint identity
+    /// as `meta`, ignoring the conversation channel and volatile provenance.
+    /// Local paths are compared through the digests the envelope stores.
+    pub(crate) fn matches_meta_identity(&self, meta: &MemoryMeta) -> bool {
+        let mut expected = wire_meta(meta);
+        let mut held = self.meta.clone();
+        for value in [&mut expected, &mut held] {
+            value.channel = None;
+            value.observed_at = None;
+            value.observed_actor = None;
+            if let Some(call) = value.tool_call.as_mut() {
+                call.id = None;
+            }
+        }
+        held == expected && self.paths == PathDigests::of(meta)
     }
 
     /// Labels a person reading the events can make sense of: the item kind,
@@ -639,7 +656,7 @@ fn app_thread(thread_id: &str) -> bool {
 }
 
 /// Whether `path` is absolute on any system: `/…`, `~…`, `\\…` or `C:…`.
-fn is_absolute(path: &str) -> bool {
+pub(crate) fn is_absolute(path: &str) -> bool {
     let drive = matches!(path.as_bytes(), [letter, b':', ..] if letter.is_ascii_alphabetic());
     path.starts_with(['/', '~', '\\']) || drive
 }

@@ -19,7 +19,7 @@
 //! Hosts normally build an engine through [`crate::registry::build_engine`] or
 //! [`crate::config::MemoryConfig::build`] rather than naming
 //! [`CortexEngine`]. Errors are the contract's [`tinymemory_api::Error`]; see
-//! [`error_code`] and [`is_insufficient_credits`] for hosted failures.
+//! [`error_code`] and [`is_plan_required`] for hosted failures.
 //!
 //! # Storage layout
 //!
@@ -82,11 +82,11 @@ mod lifecycle_tests;
 #[path = "local_paths_tests.rs"]
 mod local_paths_tests;
 
-pub use credential::{BearerSource, CortexCredential, StaticBearer};
+pub use credential::{BearerSource, CallbackBearerSource, CortexCredential, StaticBearer};
 pub use descriptor::{
     CORTEX_API_ENDPOINT, CORTEXDB_ENGINE_ID, CortexWire, PROXIED_ENGINE_ID,
     TINYHUMANS_API_ENDPOINT, TINYHUMANS_ENGINE_ID, cortexdb_descriptor, proxied_descriptor,
     tinyhumans_descriptor,
 };
 pub use engine::CortexEngine;
-pub use error::{Error, Result, error_code, is_insufficient_credits};
+pub use error::{Error, Result, error_code, is_plan_required};

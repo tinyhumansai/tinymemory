@@ -90,6 +90,30 @@ async fn list_overwrites_the_reach_whatever_the_filter_says() {
 }
 
 #[tokio::test]
+async fn read_tool_accepts_the_shared_maximum_limit() {
+    let (engine, _) = engine_with(&[]).await;
+    let result = list(
+        &engine,
+        &ToolScope::default(),
+        &json!({ "limit": crate::ops::MAX_LIMIT }),
+    )
+    .await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn explorer_accepts_its_separate_maximum_bucket_limit() {
+    let (engine, _) = engine_with(&[]).await;
+    let result = explore(
+        &engine,
+        &ToolScope::default(),
+        &json!({ "facet": "kind", "limit": crate::ops::MAX_BUCKETS }),
+    )
+    .await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
 async fn fetch_refuses_a_mode_the_engine_does_not_list_by_name() {
     let (engine, _) = engine_with(&[]).await;
     let error = fetch(

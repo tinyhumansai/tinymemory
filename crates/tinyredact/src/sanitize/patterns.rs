@@ -32,12 +32,12 @@ pub(super) static REDACTION_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = Laz
             "${1}[REDACTED]",
         ),
         (
-            literal(r#"(?i)(api[_-]?key\s*[=:\s]\s*["']?)[^\s"']+"#),
+            literal(r#"(?i)(api[_-]?key["']?\s*[=:\s]\s*["']?)[^\s"']+"#),
             "${1}[REDACTED]",
         ),
         (
             literal(
-                r#"(?i)\b(token|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|secret)\b\s*[=:\s]\s*["']?[^\s"'&]+"#,
+                r#"(?i)(?:\b|_)(token|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|secret)\b["']?\s*[=:\s]\s*["']?[^\s"'&]+"#,
             ),
             "[REDACTED]",
         ),
@@ -51,7 +51,7 @@ pub(super) static REDACTION_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = Laz
         ),
         (
             literal(
-                r#"(?i)\b(access_token|refresh_token|id_token|authorization_code|code_verifier|code_challenge)\b\s*[=:\s]\s*["']?[^\s"'&]+"#,
+                r#"(?i)\b(access_token|refresh_token|id_token|authorization_code|code_verifier|code_challenge)\b["']?\s*[=:\s]\s*["']?[^\s"'&]+"#,
             ),
             "[REDACTED]",
         ),

@@ -27,6 +27,8 @@ Architecture overview:
 | `migrate(engine, workspace, from)` | Copies every item after `from` into a `MemoryEngine`, in `store_many` batches; returns a `MigrationReport`. |
 | `migrate_with(engine, workspace, from, on_batch)` | `migrate`, calling `on_batch(&Checkpoint)` after each stored batch so the host can persist it. |
 | `MigrationReport { stored, replayed, batches, checkpoint }` | What a run did, and where to resume. |
+| `Importer::resume_plan(file, billing_ok, paused)` | Pure decision for whether a background tick resumes an import, resumes a failed-item retry, or waits. |
+| `record_resume_failure(store, error)` | Persists an automatic resume failure using only the host checkpoint store; no engine or pacer is needed. |
 | `Error` / `Result` | `NotFound`, `NotLegacy`, `Sqlite`, `Io`, `Json`, `Engine { source, checkpoint }`; `Error::checkpoint()` reads the resume point. |
 
 ## Detection

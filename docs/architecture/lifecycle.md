@@ -11,12 +11,24 @@ every agent turn. The accepted behaviour is in
 | `layout` | `MemoryLayout`, `BrainSource` | The standard tree: brain sources, agent conversations, learnings, below one root |
 | `recall` | `HolisticRecall` → `ContextPack` | The one read: several scopes at once, deduplicated, rendered within a budget |
 | `brain` | `Brain`, `BrainDocument` | Global documents by source type: ingest, search, forget |
-| `lifecycle` | `AgentMemory`, `RecallPolicy` | One agent's session start, pre-turn, post-turn and compaction |
+| `lifecycle` | `AgentMemory`, `RecallPolicy`, `TurnHooks` | One agent's session start, pre-turn, post-turn and compaction |
+| `lifecycle::window` | `InPromptFrom` | Live, deduplicated prompt-window advancement as compaction runs |
+| `lifecycle::date_hint` | `DateHintModel`, `parse_range` | Runtime-neutral date-range instruction and parsing |
 | `background` | `BackgroundJob`, `BackgroundRunner` | The slow work the others hand back |
 | `context` | `ContextCompiler` | `context.md`: a holistic recall preset with frontmatter |
 
 Every module takes an `Arc<dyn MemoryEngine>`. None of them knows which engine
 is behind it, so swapping engines is a one-line change in the host.
+
+`TurnHooks` is the runtime-neutral orchestration layer around `AgentMemory`.
+The host supplies an `EngineResolver`, monotonic `Clock`, optional
+`DateHintModel`, `JobsSink`, and `CitationSink`. Pre-turn and compaction work
+race engine work against one absolute deadline; dropping the returned future
+drops the in-flight engine and model futures. The library starts no tasks and
+has no Tokio dependency. A host may pass the owned `TurnHooks::pre_turn_work`
+future to the existing `Prefetcher`; its `PrefetchRuntime` owns spawning,
+bounds, and cancellation. Citation delivery is explicit, so a background pack
+that the turn did not receive cannot emit citations.
 
 ## The tree
 
@@ -74,6 +86,25 @@ warm `pre_turn` measured about 40 ms and a `post_turn` about 2 ms; see
 `pre_turn` returns a pack even when logging fails. The failure is in
 `log_error`, so a write outage degrades memory but never blocks a turn.
 
+`PreTurn::resumed` defaults to `false` for older serialized requests and makes
+resumed-thread context part of `AgentMemory::pre_turn`. The legacy
+`pre_turn_resumed` helper still forces `true`; `pre_turn_dated` keeps its
+explicit `resumed` argument as the override. When recall is disabled but turn
+logging remains enabled, `RecallPolicy::log_only` clears read limits while
+preserving the configured budget and build cadence; `TurnHooks` also clears
+host-added core scopes so recall-off turns perform no memory reads.
+
+Channel hosts may set `PreTurn::channel` and `PostTurn::channel`. Both user
+and assistant conversation items then carry the same `MemoryMeta::channel`;
+the channel is part of item metadata, while stable thread and turn positions
+keep identical retries idempotent.
+
+The optional date-hint model receives `lifecycle::date_hint::INSTRUCTION`, the
+user's text, and the zone. The host may add its current-date line. The tools
+crate parses the raw JSON through shared `ops::DateRange` and `ops::time_hint`;
+an absent, invalid, or late answer leaves ordinary recall unchanged. The hint
+deadline comes from the pre-turn deadline minus its margin, never a new timeout.
+
 ## Holistic recall in detail
 
 1. **Validate.** The only error a pack can return is an invalid request.
@@ -90,8 +121,8 @@ warm `pre_turn` measured about 40 ms and a `post_turn` about 2 ms; see
    - Hit lists lose the kinds the section does not admit, the excluded ids,
      the thread window, and anything an earlier section listed. Each list
      is then cut to its limit.
-   - A section left empty is reported as skipped (`reason: "empty"`), as is
-     a failed one (its error).
+   - A section left empty is reported as `SkipReason::Empty`; a failed section
+     carries `SkipReason::Engine(error)` with the original typed engine error.
 4. **Render** (`recall/render.rs`). A section is prose (an answer) or lines
    (one bullet per hit). A titled document is shown as `title: body`, and a
    turn that carries a time is led by it (`[2026-09-15 09:01] user: …`), so

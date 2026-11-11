@@ -669,3 +669,62 @@ fn prefilter_is_superset_of_legacy_screen() {
         }
     }
 }
+
+#[test]
+fn credit_card_followed_by_space_and_digits_redacted() {
+    let input = "card 4111 1111 1111 1111 123";
+    let survived: Vec<_> = [
+        ("corroborated", redact_pii(input)),
+        ("default", redact_pii_with(input, Policy::default())),
+    ]
+    .into_iter()
+    .filter(|(_, out)| out.value.contains("4111 1111 1111 1111"))
+    .map(|(policy, out)| format!("{policy}: {:?}", out.value))
+    .collect();
+    assert!(survived.is_empty(), "card survived: {survived:?}");
+}
+
+#[test]
+fn credit_card_after_a_leading_number_is_redacted_and_the_number_kept() {
+    let out = redact_pii_with("qty 2 4111 1111 1111 1111", Policy::default());
+    assert!(
+        !out.value.contains("4111 1111"),
+        "card survived: {:?}",
+        out.value
+    );
+    assert!(
+        out.value.starts_with("qty 2 "),
+        "the leading number went too: {:?}",
+        out.value
+    );
+}
+
+#[test]
+fn a_separated_digit_list_with_no_card_is_left_alone() {
+    // The whole run fails Luhn and its only Luhn-valid window,
+    // `1000 2000 1000 0002`, has no network IIN and no card keyword nearby,
+    // so it is not taken as a card under either gate.
+    let input = "ids 123 1000 2000 1000 0002";
+    for policy in [Policy::default(), Policy::corroborated()] {
+        assert_eq!(redact_pii_with(input, policy).value, input, "{policy:?}");
+    }
+}
+
+#[test]
+fn a_partial_overlap_keeps_its_tail_redacted() {
+    let mut hits = vec![
+        Hit {
+            start: 5,
+            end: 15,
+            token: PII_PHONE,
+        },
+        Hit {
+            start: 0,
+            end: 10,
+            token: PII_CC,
+        },
+    ];
+    dedupe_overlaps(&mut hits);
+    let ranges: Vec<_> = hits.iter().map(|h| (h.start, h.end, h.token)).collect();
+    assert_eq!(ranges, vec![(0, 15, PII_CC)]);
+}

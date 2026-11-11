@@ -41,7 +41,7 @@ caller's to state.
 | `ConvertedDocument` | markdown plus title, source format, language, and converter metadata |
 | `DocumentConverter` | the conversion seam — object-safe and async |
 | `NativeConverter` | markdown, text, HTML and code, with no dependencies |
-| `OfficeConverter` | PDF, DOCX, PPTX and XLSX, in-process (feature `documents-office`) |
+| `OfficeConverter` | PDF, DOCX and PPTX, in-process (feature `documents-office`); XLSX is temporarily unsupported |
 | `ConverterChain` | converters in priority order; first claim wins |
 | `document_item` / `converted_item` | the conversion wrapped as a `StoreItem::Document` |
 | `markdown_from_text` | the synchronous core, for callers that already hold text |
@@ -67,17 +67,22 @@ conversion is a trait a host binds:
 let chain = ConverterChain::default().prepend(Box::new(MyPdfConverter));
 ```
 
-The `documents-office` feature ships one such binding, `OfficeConverter`: PDF (text
-layer only — a scanned PDF is refused as having no text; pages are extracted
-one by one, normalized on their own and joined by `PAGE_BREAK`, a form feed,
-so a reader can number them), DOCX, PPTX (slides
-in numeric order) and XLSX (one `sheet | cell | cell` line per row), all pure
-Rust. It refuses hostile input rather than allocating for it: an archive whose
-declared uncompressed size exceeds `MAX_DECOMPRESSED_BYTES` (64 MiB), and a
-spreadsheet whose dense used range exceeds `MAX_SPREADSHEET_DENSE_CELLS`
-(1,000,000). Unreadable documents are `Error::Invalid`. Parsing is CPU-bound;
-a host on a shared executor calls `OfficeConverter::convert_blocking` from its
+The `documents-office` feature ships one such binding, `OfficeConverter`: PDF
+(text layer only — a scanned PDF is refused as having no text; pages are
+extracted one by one, normalized on their own and joined by `PAGE_BREAK`, a
+form feed, so a reader can number them), DOCX and PPTX (slides in numeric
+order), all pure Rust. It refuses hostile archive input rather than allocating
+for it when declared uncompressed sizes exceed `MAX_DECOMPRESSED_BYTES`
+(64 MiB). Unreadable documents are `Error::Invalid`. Parsing is CPU-bound; a
+host on a shared executor calls `OfficeConverter::convert_blocking` from its
 own blocking pool.
+
+XLSX and macro-enabled XLSM remain recognizable formats, but the built-in
+spreadsheet reader is temporarily disabled while TinyMemory waits for a safe
+Calamine release. `OfficeConverter::supports(DocumentFormat::Xlsx)` is false;
+calling it directly returns `Error::UnsupportedFormat` with a restoration
+message before opening the workbook. A host can still bind its own spreadsheet
+converter. CSV and other plain text continue through `NativeConverter`.
 
 A zip upload is told apart by its part names (`word/`, `xl/`, `ppt/`) read
 from the central directory, so an `.xlsx` sent as `application/octet-stream`
@@ -103,6 +108,5 @@ success.
 
 - `documents` — this module; depends only on `async-trait`, `serde`,
   `serde_json` and `thiserror`.
-- `documents-office` — `OfficeConverter` (`pdf-extract`, `calamine`, `zip`,
-  `quick-xml`). Off by default; it links a PDF parser and a spreadsheet reader
-  a text-only host has no use for.
+- `documents-office` — `OfficeConverter` (`pdf-extract`, `zip`, `quick-xml`).
+  Off by default; it links a PDF parser a text-only host has no use for.

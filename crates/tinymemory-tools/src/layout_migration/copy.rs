@@ -101,7 +101,12 @@ where
             Ok(page) => page,
             Err(error) => {
                 let error = Error::from(error);
-                if error.is_account_wide() {
+                // A failed legacy read must pause this cursor for later
+                // retry. Unavailable is transient, not account-wide, but
+                // continuing without the unread page would skip data.
+                if error.is_account_wide()
+                    || matches!(&error, Error::Engine(tinymemory_api::Error::Unavailable(_)))
+                {
                     return pause(store, state, error.to_string());
                 }
                 return Err(error);

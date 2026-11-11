@@ -30,6 +30,7 @@ pub(super) async fn all(ctx: &Ctx<'_>) -> Result<()> {
     recall(ctx).await?;
     // After `recall`, so a recall fault is reported by the check named for it.
     excluded_thread(ctx).await?;
+    super::channel::channel(ctx).await?;
     super::lifecycle::consolidate(ctx).await
 }
 

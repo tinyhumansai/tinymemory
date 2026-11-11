@@ -25,13 +25,21 @@ pub(super) fn pptx(bytes: &[u8]) -> Result<String> {
     let mut archive = open(bytes, "deck")?;
     // Numeric, not lexicographic: `slide10.xml` sorts before `slide2.xml` as
     // a string.
-    let mut slides: Vec<(u32, String)> = archive
-        .file_names()
-        .filter_map(|name| {
-            let number = name.strip_prefix(PREFIX)?.strip_suffix(".xml")?;
-            Some((number.parse().ok()?, name.to_string()))
-        })
-        .collect();
+    let mut slides = Vec::new();
+    for name in archive.file_names() {
+        let name = name.map_err(|error| {
+            unreadable(format!("the deck has an unreadable entry name: {error}"))
+        })?;
+        let Some(number) = name
+            .strip_prefix(PREFIX)
+            .and_then(|name| name.strip_suffix(".xml"))
+        else {
+            continue;
+        };
+        if let Ok(number) = number.parse::<u32>() {
+            slides.push((number, name.to_string()));
+        }
+    }
     slides.sort_unstable();
     let names: Vec<&str> = slides.iter().map(|(_, name)| name.as_str()).collect();
     read_parts(&mut archive, &names, "a:p", "a:t")
@@ -101,23 +109,21 @@ fn xml_text(xml: &str, paragraph_tag: &str, text_tag: &str) -> String {
     let mut in_text = false;
     loop {
         match reader.read_event() {
-            Ok(Event::Start(tag)) if tag.name().as_ref() == text_tag.as_bytes() => in_text = true,
-            Ok(Event::End(tag)) if tag.name().as_ref() == text_tag.as_bytes() => in_text = false,
-            Ok(Event::End(tag)) if tag.name().as_ref() == paragraph_tag.as_bytes() => {
+            Ok(Event::Start(tag)) if tag.name().as_ref() == text_tag => in_text = true,
+            Ok(Event::End(tag)) if tag.name().as_ref() == text_tag => in_text = false,
+            Ok(Event::End(tag)) if tag.name().as_ref() == paragraph_tag => {
                 out.push_str("\n\n");
             }
             Ok(Event::Text(text)) if in_text => {
-                out.push_str(&text.decode().unwrap_or_default());
+                out.push_str(&text.xml10_content());
             }
             // The parser reports each `&amp;` / `&#38;` as its own event;
             // dropping them would turn "Q&A" into "QA".
             Ok(Event::GeneralRef(reference)) if in_text => {
                 if let Ok(Some(ch)) = reference.resolve_char_ref() {
                     out.push(ch);
-                } else if let Some(entity) = reference
-                    .decode()
-                    .ok()
-                    .and_then(|name| quick_xml::escape::resolve_predefined_entity(&name))
+                } else if let Some(entity) =
+                    quick_xml::escape::resolve_predefined_entity(reference.as_ref())
                 {
                     out.push_str(entity);
                 }

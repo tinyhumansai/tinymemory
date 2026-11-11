@@ -11,7 +11,8 @@ no longer applies rather than leaving it to rot.
 
 This is a Cargo **workspace** with a virtual root: there is no root package,
 and every crate lives in its own directory under `crates/`, named for the
-package it holds. There are exactly three, one per part of the memory layer:
+package it holds. The workspace has four packages: three in the memory layer
+and the standalone redaction library `tinyredact`:
 
 - `crates/tinymemory-api` — the **core contract**: `MemoryEngine`, items,
   metadata, namespaces, errors, and (feature `conformance`) the suite every
@@ -22,6 +23,8 @@ package it holds. There are exactly three, one per part of the memory layer:
 - `crates/tinymemory-integrations` — the **integrations**: the CortexDB engine
   and its registry, documents, sources, safety and the legacy v1 import, each
   a module behind a feature.
+- `crates/tinyredact` — **local redaction**: secret and personal identifier
+  detection and scrubbing, with no network access.
 
 Shared package metadata, the version and the lint table live in the root
 `Cargo.toml` (`[workspace.package]`, `[workspace.lints]`). The accepted
@@ -49,11 +52,12 @@ docs/
 └── adr/                # immutable architecture decision records
 ```
 
-Do not add a fourth crate. New contract surface goes in `tinymemory-api`, a new
-agent-facing tool in `tinymemory-tools`, and anything that talks to the outside
-world (a new engine, reader or converter) becomes a module of
-`tinymemory-integrations` behind a feature named after it, with its
-dependencies optional and enabled only by that feature.
+Do not add another crate without an explicit architecture decision. New
+contract surface goes in `tinymemory-api`, a new agent-facing tool in
+`tinymemory-tools`, and anything that talks to the outside world (a new engine,
+reader or converter) becomes a module of `tinymemory-integrations` behind a
+feature named after it, with its dependencies optional and enabled only by that
+feature. Keep standalone redaction changes in `tinyredact`.
 
 Each feature area belongs in a focused module directory under the crate's
 `src/`. A module root explains the module, wires its pieces together, and

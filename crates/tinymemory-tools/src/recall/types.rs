@@ -236,11 +236,21 @@ pub struct SectionHits {
 
 /// A section that contributed nothing, and why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "error", rename_all = "snake_case")]
+pub enum SkipReason {
+    /// The section read succeeded but returned no hits.
+    Empty,
+    /// The engine refused or failed the section read.
+    Engine(Error),
+}
+
+/// A section that contributed nothing, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SkippedSection {
     /// The section's heading.
     pub heading: String,
-    /// Why: `empty`, or the engine's error.
-    pub reason: String,
+    /// Typed reason, retaining the engine error category and cause.
+    pub reason: SkipReason,
 }
 
 /// A rendered holistic recall.

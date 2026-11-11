@@ -93,7 +93,7 @@
         "limit": {
           "default": 10,
           "description": "Most memories the answer may cite.",
-          "maximum": 50,
+          "maximum": 100,
           "minimum": 1,
           "type": "integer"
         },
@@ -223,7 +223,7 @@
         "limit": {
           "default": 10,
           "description": "Most memories to return.",
-          "maximum": 50,
+          "maximum": 100,
           "minimum": 1,
           "type": "integer"
         },
@@ -363,7 +363,7 @@
         "limit": {
           "default": 10,
           "description": "Most memories to return.",
-          "maximum": 50,
+          "maximum": 100,
           "minimum": 1,
           "type": "integer"
         }
@@ -500,9 +500,9 @@
           "type": "object"
         },
         "limit": {
-          "default": 10,
+          "default": 50,
           "description": "Most values to return.",
-          "maximum": 50,
+          "maximum": 500,
           "minimum": 1,
           "type": "integer"
         }

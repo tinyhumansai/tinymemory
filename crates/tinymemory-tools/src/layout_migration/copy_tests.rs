@@ -213,7 +213,7 @@ async fn an_account_that_cannot_write_pauses_without_advancing() {
 }
 
 #[tokio::test]
-async fn a_legacy_tree_that_cannot_be_read_pauses() {
+async fn an_unavailable_legacy_read_pauses_without_advancing_its_cursor() {
     let store = MemoryStateStore::default();
     let engines = Engines {
         legacy: Arc::new(RefusingEngine::with(tinymemory_api::Error::Unavailable(
@@ -228,6 +228,8 @@ async fn a_legacy_tree_that_cannot_be_read_pauses() {
     .await
     .unwrap();
     assert_eq!(state.phase, Phase::Paused);
+    assert_eq!(state.cursor, None);
+    assert!(state.error.as_deref().unwrap().contains("down"));
 }
 
 #[tokio::test]
