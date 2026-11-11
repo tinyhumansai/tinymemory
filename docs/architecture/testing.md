@@ -260,7 +260,7 @@ idempotency pairs, and every recall, answer and forget body for assertions.
 | File | Needs | Covers |
 | --- | --- | --- |
 | `feature_surface.rs` | `full` | the modules compose: scrub an item, store it in the reference engine, run the conformance suite, compile a context |
-| `documents_office.rs` | `documents-office` | `OfficeConverter` prepends to the default `ConverterChain` and supports PDF, DOCX and PPTX, while XLSX remains recognized but unsupported |
+| `documents_office.rs` | `documents-office` | `OfficeConverter` prepends to the default `ConverterChain` and supports PDF, DOCX, XLSX, PPTX |
 | `reader_dispatch.rs` | `sources` (`sources-network` for one test) | local readers are constructed for timers, network readers only for requests |
 | `legacy_import.rs` | `legacy-import` | importing v1 workspaces, every mapping, ordering and resumption |
 | `live_cortexdb.rs`, `office_live.rs` | `cortex` (+ `documents-office`) | a real CortexDB; skipped unless configured |

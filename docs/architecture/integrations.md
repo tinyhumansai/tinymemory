@@ -97,7 +97,7 @@ extension, or `None`. The names are a wire contract: they land in
 | `ConvertedDocument` | markdown (never empty), title, format, language, source size, converter metadata |
 | `DocumentConverter` | the object-safe async seam: `name`, `supports(format)`, `convert(&RawDocument)` |
 | `NativeConverter` | markdown, plain text, HTML and code, with no dependencies |
-| `OfficeConverter` | PDF, DOCX and PPTX (feature `documents-office`); XLSX remains recognized but is temporarily unsupported |
+| `OfficeConverter` | PDF, DOCX, PPTX and XLSX (feature `documents-office`) |
 | `ConverterChain` | converters in priority order; the first that claims the format converts |
 | `check_size` | rejects an empty body or one over `MAX_DOCUMENT_BYTES` |
 | `markdown_from_text` | the synchronous core, for callers already holding text |
@@ -117,21 +117,20 @@ listing what the build can convert, never a silent empty document.
 ### OfficeConverter
 
 Under `documents-office`, `OfficeConverter` is pure Rust (`pdf-extract`, `zip` +
-`quick-xml`):
+`quick-xml`, `calamine`):
 
 | Format | Reader | Markdown |
 | --- | --- | --- |
 | PDF | text layer only (a scanned PDF is refused as having no text) | page text, whitespace-normalised |
 | DOCX | `word/document.xml` | one paragraph per `w:p` |
 | PPTX | `ppt/slides/slideN.xml` | slides in numeric order |
-| XLSX | temporarily disabled while awaiting a safe Calamine release | `Error::UnsupportedFormat`; the workbook is not opened |
+| XLSX | `calamine` | one `sheet \| cell \| cell` line per non-empty row |
 
 It refuses hostile input: an archive whose declared uncompressed size exceeds
-`MAX_DECOMPRESSED_BYTES` (64 MiB), each entry read being capped as well. XLSX
-and XLSM are recognized by format sniffing but are not claimed by the built-in
-converter; a host may bind its own `DocumentConverter`. CSV and plaintext stay
-on the native text converter. A `pdf-extract` panic on a malformed file is
-caught and reported as an unreadable document. Parsing is CPU-bound and runs inline in the async
+`MAX_DECOMPRESSED_BYTES` (64 MiB), each entry read being capped as well, and a
+spreadsheet whose dense used range exceeds `MAX_SPREADSHEET_DENSE_CELLS`
+(1,000,000). A `pdf-extract` panic on a malformed file is caught and reported
+as an unreadable document. Parsing is CPU-bound and runs inline in the async
 `convert`; a host on a shared executor calls `convert_blocking` from its own
 blocking pool. A host typically prepends it:
 
