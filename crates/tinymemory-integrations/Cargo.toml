@@ -82,7 +82,7 @@ tracing = { version = "0.1", optional = true }
 # `memory_tree/chunks.db`. Bundled so the importer does not depend on a system
 # SQLite; `functions` lets a count apply the importer's own blank-text test in
 # SQL.
-rusqlite = { version = "0.40", features = ["bundled", "functions"], optional = true }
+rusqlite = { version = "0.41", features = ["bundled", "functions"], optional = true }
 
 [dev-dependencies]
 # The behavioural suite every engine must pass, run over both CortexDB wires'
