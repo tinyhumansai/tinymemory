@@ -172,6 +172,17 @@ fn an_overlong_separated_number_is_not_matched_on_a_prefix() {
 }
 
 #[test]
+fn only_ascii_digits_make_up_an_international_phone_number() {
+    // Seven ASCII digits followed by nine Arabic-Indic ones: 16 digits in one
+    // run, past the 15-digit bound, so it is not a phone number.
+    let text = "ref +1234567\u{661}\u{662}\u{663}\u{664}\u{665}\u{666}\u{667}\u{668}\u{669} end";
+    assert!(
+        !scan(text).has_category(PiiCategory::PhoneNumber),
+        "flagged {text:?}"
+    );
+}
+
+#[test]
 fn international_phone_separators_do_not_span_lines_or_tabs() {
     // Only a space or a hyphen joins two digit groups. A newline or a tab
     // ends the candidate, so two short runs on separate lines are not glued

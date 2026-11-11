@@ -199,10 +199,12 @@ fn build_rules() -> Vec<Rule> {
         // bound on purpose: it consumes the whole digit-and-separator run, and
         // the validator then rejects any run outside 7–15 digits, so an
         // overlong value is left alone rather than matched on a 15-digit head
-        // that happens to end at a separator.
+        // that happens to end at a separator. Digits are ASCII only, the same
+        // set the validator counts; `\d` would also take other scripts' digits
+        // and let a run past 15 digits through.
         pattern_rule(
             PiiCategory::PhoneNumber,
-            r"\+\d(?:[ -]?\d){6,}\b",
+            r"\+[0-9](?:[ -]?[0-9]){6,}\b",
             Some(has_international_phone_digit_count),
         ),
         // IPv4 address (octet-validated).
