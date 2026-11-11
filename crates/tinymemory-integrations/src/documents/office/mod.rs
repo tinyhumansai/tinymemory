@@ -36,7 +36,13 @@
 //! a sheet's cells, so a tiny workbook with one cell at `A1` and one at
 //! `XFD1048576` would allocate ~17 billion cells. The cells are scanned
 //! sparsely first and a sheet whose box exceeds
-//! [`MAX_SPREADSHEET_DENSE_CELLS`] is refused before that happens.
+//! [`MAX_SPREADSHEET_DENSE_CELLS`] is refused before that happens. The same
+//! scan sums each cell's text, counting every reference to a shared string,
+//! because reading a sheet copies the string into each cell: a workbook past
+//! [`MAX_SPREADSHEET_TEXT_BYTES`] is refused too. And calamine reserves room
+//! for the shared-string count a workbook declares while it opens it, so a
+//! table declaring more entries than a sheet could hold cells is refused
+//! before calamine sees it.
 //!
 //! `pdf-extract` panics on some malformed documents rather than erroring; the
 //! panic is caught and reported as an unreadable document.
@@ -71,6 +77,11 @@ pub const MAX_DECOMPRESSED_BYTES: u64 = 64 * 1024 * 1024;
 /// refused. The used range of a real spreadsheet is a small fraction of the
 /// grid, so this only bites hostile input; see the module docs.
 pub const MAX_SPREADSHEET_DENSE_CELLS: usize = 1_000_000;
+
+/// The most cell text, in bytes, a spreadsheet may expand to across all its
+/// sheets before it is refused. Every reference to a shared string counts, as
+/// reading the sheet copies the string into each cell.
+pub const MAX_SPREADSHEET_TEXT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Converts PDF, DOCX, PPTX and XLSX documents to markdown, in-process.
 ///

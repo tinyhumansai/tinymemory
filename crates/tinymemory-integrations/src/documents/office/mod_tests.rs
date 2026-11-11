@@ -81,6 +81,11 @@ fn pptx(slides: &[(u32, &str)]) -> Vec<u8> {
 /// content-type map, the root and workbook relationships, and the workbook
 /// itself. No shared strings or styles, which the reader tolerates.
 fn xlsx_with_sheet(sheet_data: &str) -> Vec<u8> {
+    xlsx_with_parts(sheet_data, &[])
+}
+
+/// A one-sheet workbook plus `extra` parts (a shared-string table, say).
+fn xlsx_with_parts(sheet_data: &str, extra: &[(&str, &str)]) -> Vec<u8> {
     let content_types = r#"<?xml version="1.0"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -106,13 +111,27 @@ fn xlsx_with_sheet(sheet_data: &str) -> Vec<u8> {
 <sheetData>{sheet_data}</sheetData>
 </worksheet>"#
     );
-    package(&[
+    let mut parts = vec![
         ("[Content_Types].xml", content_types),
         ("_rels/.rels", root_rels),
         ("xl/workbook.xml", workbook),
         ("xl/_rels/workbook.xml.rels", workbook_rels),
-        ("xl/worksheets/sheet1.xml", &worksheet),
-    ])
+        ("xl/worksheets/sheet1.xml", worksheet.as_str()),
+    ];
+    parts.extend_from_slice(extra);
+    package(&parts)
+}
+
+fn shared_strings(unique_count: &str, strings: &[&str]) -> String {
+    let items: String = strings
+        .iter()
+        .map(|s| format!("<si><t>{s}</t></si>"))
+        .collect();
+    format!(
+        r#"<?xml version="1.0"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="{n}" uniqueCount="{unique_count}">{items}</sst>"#,
+        n = strings.len()
+    )
 }
 
 /// A one-page PDF whose content stream is `content`, with a correct
@@ -422,4 +441,63 @@ async fn prepended_to_the_default_chain_it_covers_every_format() {
         .await
         .unwrap();
     assert_eq!(notes.metadata["converter"], "native");
+}
+
+#[tokio::test]
+async fn a_shared_string_cell_reads_through_the_table() {
+    let table = shared_strings("1", &["hello"]);
+    let bytes = xlsx_with_parts(
+        r#"<row r="1"><c r="A1" t="s"><v>0</v></c></row>"#,
+        &[("xl/sharedStrings.xml", &table)],
+    );
+    let converted = convert("ledger.xlsx", bytes).await.unwrap();
+    assert_eq!(converted.markdown, "Sheet1 | hello");
+}
+
+#[tokio::test]
+async fn an_absurd_shared_string_count_is_refused_before_calamine_reserves_it() {
+    // calamine reserves `uniqueCount` entries while it opens the workbook: a
+    // count past the bound would abort the process, not return an error.
+    for count in [
+        "18446744073709551615",
+        "1000001",
+        "99999999999999999999999",
+        "+5",
+        "",
+    ] {
+        let table = shared_strings(count, &["x"]);
+        let bytes = xlsx_with_parts(
+            r#"<row r="1"><c r="A1" t="s"><v>0</v></c></row>"#,
+            &[("xl/sharedStrings.xml", &table)],
+        );
+        let reason = refusal("table.xlsx", bytes).await;
+        assert!(
+            reason.contains("shared-string table"),
+            "{count:?}: {reason}"
+        );
+    }
+    // Checked wherever the table sits, not only under `xl/`.
+    let table = shared_strings("18446744073709551615", &["x"]);
+    let bytes = xlsx_with_parts(
+        r#"<row r="1"><c r="A1"><v>1</v></c></row>"#,
+        &[("other/sharedStrings.xml", &table)],
+    );
+    let reason = refusal("table.xlsx", bytes).await;
+    assert!(reason.contains("shared-string table"), "{reason}");
+}
+
+#[tokio::test]
+async fn repeated_shared_string_references_count_against_the_text_budget() {
+    // One 4 KiB string referenced from enough cells to expand past the text
+    // budget: small as an archive, far below the cell bound, but every
+    // reference becomes its own copy when the sheet is read.
+    let long = "x".repeat(4096);
+    let table = shared_strings("1", &[&long]);
+    let cells = usize::try_from(MAX_SPREADSHEET_TEXT_BYTES / 4096).unwrap() + 1;
+    let rows: String = (1..=cells)
+        .map(|row| format!(r#"<row r="{row}"><c r="A{row}" t="s"><v>0</v></c></row>"#))
+        .collect();
+    let bytes = xlsx_with_parts(&rows, &[("xl/sharedStrings.xml", &table)]);
+    let reason = refusal("repeat.xlsx", bytes).await;
+    assert!(reason.contains("cell text exceeds"), "{reason}");
 }
