@@ -178,3 +178,20 @@ async fn a_plan_refusal_never_uses_up_a_jobs_attempts() {
     assert_eq!(state.pending.len(), 1, "the job waits for the plan");
     assert_eq!(state.pending[0].attempts, 0);
 }
+
+#[tokio::test]
+async fn bounded_runner_processes_all_claimed_jobs() {
+    let queue = queue();
+    queue
+        .enqueue(&Namespace::ROOT, vec![build("a"), build("b")])
+        .await;
+
+    let runs = queue
+        .run_with_concurrency(reference(), Selection::All, 0, 2)
+        .await
+        .unwrap();
+
+    assert_eq!(runs.len(), 2);
+    assert!(queue.snapshot().await.pending.is_empty());
+    assert_eq!(queue.snapshot().await.history.len(), 2);
+}

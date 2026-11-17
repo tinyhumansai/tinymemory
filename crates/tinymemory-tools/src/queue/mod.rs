@@ -22,7 +22,7 @@ mod types;
 use std::sync::Arc;
 
 use chrono::{Duration, Utc};
-use futures::lock::Mutex;
+use futures::{StreamExt, lock::Mutex, stream};
 use sha2::{Digest, Sha256};
 use tinymemory_api::{MemoryEngine, Namespace};
 
@@ -67,6 +67,95 @@ fn queued(root: &str, job: BackgroundJob) -> QueuedJob {
         queued_at: Utc::now(),
         attempts: 0,
         last_error: None,
+    }
+}
+
+struct RunResult {
+    record: JobRun,
+    retry: Option<QueuedJob>,
+    follow_ups: Vec<QueuedJob>,
+}
+
+async fn run_entry(engine: Arc<dyn MemoryEngine>, mut entry: QueuedJob) -> RunResult {
+    let layout = entry
+        .root
+        .parse::<Namespace>()
+        .ok()
+        .and_then(|root| MemoryLayout::new(root).ok())
+        .unwrap_or_default();
+    let runner = BackgroundRunner::new(engine, layout);
+    let name = entry.job.name().to_string();
+    let mut record = JobRun {
+        id: entry.id.clone(),
+        job: name.clone(),
+        root: entry.root.clone(),
+        ran_at: Utc::now(),
+        outcome: String::new(),
+        reason: None,
+        built: None,
+        stored: 0,
+    };
+    match runner.run(entry.job.clone()).await {
+        Ok(report) => {
+            record.outcome = match &report.outcome {
+                JobOutcome::Done => "done",
+                JobOutcome::Started => "started",
+                JobOutcome::Scheduled => "scheduled",
+                JobOutcome::Skipped { .. } => "skipped",
+            }
+            .to_string();
+            if let JobOutcome::Skipped { reason } = &report.outcome {
+                record.reason = Some(reason.clone());
+            }
+            record.built = report
+                .consolidation
+                .as_ref()
+                .and_then(|receipt| receipt.built);
+            record.stored = report.stored.len();
+            let follow_ups = report
+                .follow_ups
+                .into_iter()
+                .map(|job| queued(&entry.root, job))
+                .collect();
+            log::info!(
+                "[memory:jobs] ran id={} job={name} outcome={} built={:?}",
+                entry.id,
+                record.outcome,
+                record.built
+            );
+            RunResult {
+                record,
+                retry: None,
+                follow_ups,
+            }
+        }
+        Err(error) => {
+            let account_wide = EngineFailure::from(error.clone()).is_account_wide();
+            if !account_wide {
+                entry.attempts += 1;
+            }
+            entry.last_error = Some(error.to_string());
+            record.outcome = "failed".to_string();
+            log::warn!(
+                "[memory:jobs] run failed id={} job={name} attempts={} account_wide={account_wide}: {error}",
+                entry.id,
+                entry.attempts
+            );
+            let retry = if entry.attempts < MAX_ATTEMPTS {
+                record.reason = Some(error.to_string());
+                Some(entry)
+            } else {
+                record.reason = Some(format!(
+                    "dropped after {MAX_ATTEMPTS} failed attempts: {error}"
+                ));
+                None
+            };
+            RunResult {
+                record,
+                retry,
+                follow_ups: Vec::new(),
+            }
+        }
     }
 }
 
@@ -239,6 +328,75 @@ impl<S: QueueStore> JobQueue<S> {
                 }
             }
             runs.push(record);
+        }
+        let mut history = runs.clone();
+        history.reverse();
+        history.append(&mut state.history);
+        history.truncate(MAX_HISTORY);
+        state.history = history;
+        self.write(&state);
+        Ok(runs)
+    }
+
+    /// Runs selected jobs with at most `concurrency` jobs in flight.
+    ///
+    /// A value of zero is treated as one. Queue state is locked only while
+    /// claiming jobs and recording results, never while a job awaits the engine.
+    ///
+    /// # Errors
+    /// [`QueueError::NoSuchJob`] when [`Selection::One`] names a job that is
+    /// not queued; the queue is left as it was.
+    pub async fn run_with_concurrency(
+        &self,
+        engine: Arc<dyn MemoryEngine>,
+        selection: Selection,
+        build_delay_secs: u64,
+        concurrency: usize,
+    ) -> Result<Vec<JobRun>, QueueError> {
+        let take = {
+            let _guard = self.lock.lock().await;
+            let mut state = self.store.load();
+            let cutoff =
+                Utc::now() - Duration::seconds(i64::try_from(build_delay_secs).unwrap_or(0));
+            let (take, keep): (Vec<QueuedJob>, Vec<QueuedJob>) =
+                state.pending.drain(..).partition(|entry| match &selection {
+                    Selection::Due => entry.queued_at <= cutoff,
+                    Selection::All => true,
+                    Selection::One(id) => &entry.id == id,
+                });
+            state.pending = keep;
+            if let Selection::One(id) = &selection
+                && take.is_empty()
+            {
+                return Err(QueueError::NoSuchJob(id.clone()));
+            }
+            self.write(&state);
+            take
+        };
+
+        let results = stream::iter(
+            take.into_iter()
+                .map(|entry| run_entry(Arc::clone(&engine), entry)),
+        )
+        .buffered(concurrency.max(1))
+        .collect::<Vec<_>>()
+        .await;
+
+        let _guard = self.lock.lock().await;
+        let mut state = self.store.load();
+        let mut runs = Vec::with_capacity(results.len());
+        for result in results {
+            if let Some(retry) = result.retry
+                && !state.pending.iter().any(|known| known.id == retry.id)
+            {
+                state.pending.push(retry);
+            }
+            for follow_up in result.follow_ups {
+                if !state.pending.iter().any(|known| known.id == follow_up.id) {
+                    state.pending.push(follow_up);
+                }
+            }
+            runs.push(result.record);
         }
         let mut history = runs.clone();
         history.reverse();

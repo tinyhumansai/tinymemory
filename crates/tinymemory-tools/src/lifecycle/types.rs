@@ -65,6 +65,8 @@ pub struct RecallSettings {
     pub compaction_timeout_ms: u64,
     /// How long queued belief builds wait for newer writes.
     pub build_delay_secs: u64,
+    /// Maximum number of background jobs that may call the engine at once.
+    pub concurrency: usize,
 }
 
 impl Default for RecallSettings {
@@ -81,6 +83,7 @@ impl Default for RecallSettings {
             date_hint: false,
             compaction_timeout_ms: 8_000,
             build_delay_secs: 300,
+            concurrency: 1,
         }
     }
 }
@@ -107,6 +110,7 @@ impl RecallSettings {
             100,
             30_000,
         )?;
+        validate_range("concurrency", self.concurrency, 1, 32)?;
         validate_build_delay_secs(self.build_delay_secs)?;
         Ok(())
     }
