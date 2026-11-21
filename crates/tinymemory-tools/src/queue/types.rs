@@ -105,15 +105,15 @@ impl Selection {
 /// Where the host keeps the queue (a file, a document, a stream).
 ///
 /// Synchronous, because the queue is small and read-modify-written under its
-/// own lock. A missing or unreadable queue loads as empty; a failed save is
-/// logged and the in-memory run carries on.
+/// own lock. A missing or unreadable queue loads as empty; ordinary failed
+/// saves are logged, while claim/result saves can abort a concurrent run.
 pub trait QueueStore: Send + Sync {
     /// The saved queue, empty when there is none.
     fn load(&self) -> QueueState;
     /// Saves the queue.
     ///
     /// # Errors
-    /// A message the queue logs; it never aborts a run.
+    /// A message the queue logs for ordinary writes.
     fn save(&self, state: &QueueState) -> Result<(), String>;
 }
 

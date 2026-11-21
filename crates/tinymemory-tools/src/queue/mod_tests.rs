@@ -381,6 +381,38 @@ async fn cancelled_claims_are_recovered() {
 }
 
 #[tokio::test]
+async fn legacy_runner_recovers_cancelled_claims() {
+    let queue = Arc::new(queue());
+    queue.enqueue(&Namespace::ROOT, vec![build("a")]).await;
+    let engine = GatedEngine::new();
+    let run_queue = Arc::clone(&queue);
+    let run_engine = Arc::clone(&engine);
+    let run = tokio::spawn(async move {
+        run_queue
+            .run_with_concurrency(run_engine, Selection::All, 0, 1)
+            .await
+    });
+    while engine.started.load(Ordering::SeqCst) < 1 {
+        tokio::task::yield_now().await;
+    }
+    run.abort();
+    let _ = run.await;
+
+    let retry_queue = Arc::clone(&queue);
+    let retry_engine = Arc::clone(&engine);
+    let retry = tokio::spawn(async move { retry_queue.run(retry_engine, Selection::All, 0).await });
+    while engine.started.load(Ordering::SeqCst) < 2 {
+        tokio::task::yield_now().await;
+    }
+    engine.release.add_permits(1);
+    retry.await.unwrap().unwrap();
+
+    let state = queue.snapshot().await;
+    assert!(state.in_flight.is_empty());
+    assert_eq!(state.pending.len(), 1);
+}
+
+#[tokio::test]
 async fn retry_merge_preserves_attempts_when_requeued_while_running() {
     let queue = Arc::new(queue());
     queue.enqueue(&Namespace::ROOT, vec![build("a")]).await;

@@ -288,6 +288,24 @@ impl<S: QueueStore> JobQueue<S> {
     ) -> Result<Vec<JobRun>, QueueError> {
         let _guard = self.lock.lock().await;
         let mut state = self.store.load();
+        let active_ids = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        let mut recovered = Vec::new();
+        let mut active_in_flight = Vec::new();
+        for entry in state.in_flight.drain(..) {
+            if active_ids.contains(&entry.id) {
+                active_in_flight.push(entry);
+            } else {
+                recovered.push(entry);
+            }
+        }
+        state.in_flight = active_in_flight;
+        for entry in recovered {
+            merge_pending(&mut state, entry);
+        }
         let cutoff = Utc::now() - Duration::seconds(i64::try_from(build_delay_secs).unwrap_or(0));
         let (take, keep): (Vec<QueuedJob>, Vec<QueuedJob>) =
             state.pending.drain(..).partition(|entry| match &selection {
