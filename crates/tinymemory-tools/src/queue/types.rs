@@ -62,6 +62,9 @@ pub struct QueueState {
     /// Jobs waiting to run.
     #[serde(default)]
     pub pending: Vec<QueuedJob>,
+    /// Jobs claimed by a runner but not yet acknowledged as complete.
+    #[serde(default)]
+    pub in_flight: Vec<QueuedJob>,
     /// The latest finished runs, newest first.
     #[serde(default)]
     pub history: Vec<JobRun>,
@@ -73,6 +76,9 @@ pub enum QueueError {
     /// [`Selection::One`] named a job that is not queued.
     #[error("no queued job `{0}`")]
     NoSuchJob(String),
+    /// The queue could not persist a claim or completed state.
+    #[error("queue storage failed: {0}")]
+    Store(String),
 }
 
 /// Which jobs a run takes.
@@ -99,15 +105,15 @@ impl Selection {
 /// Where the host keeps the queue (a file, a document, a stream).
 ///
 /// Synchronous, because the queue is small and read-modify-written under its
-/// own lock. A missing or unreadable queue loads as empty; a failed save is
-/// logged and the in-memory run carries on.
+/// own lock. A missing or unreadable queue loads as empty; ordinary failed
+/// saves are logged, while claim/result saves can abort a concurrent run.
 pub trait QueueStore: Send + Sync {
     /// The saved queue, empty when there is none.
     fn load(&self) -> QueueState;
     /// Saves the queue.
     ///
     /// # Errors
-    /// A message the queue logs; it never aborts a run.
+    /// A message the queue logs for ordinary writes.
     fn save(&self, state: &QueueState) -> Result<(), String>;
 }
 
