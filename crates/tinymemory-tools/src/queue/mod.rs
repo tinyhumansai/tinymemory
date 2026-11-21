@@ -19,7 +19,8 @@
 
 mod types;
 
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use chrono::{Duration, Utc};
 use futures::{StreamExt, lock::Mutex, stream};
@@ -41,6 +42,24 @@ pub struct JobQueue<S: QueueStore> {
     /// Serialises read-modify-writes. Held across a run, so two runs never
     /// take the same job.
     lock: Mutex<()>,
+    active: Arc<StdMutex<HashSet<String>>>,
+}
+
+struct ActiveClaims {
+    active: Arc<StdMutex<HashSet<String>>>,
+    ids: Vec<String>,
+}
+
+impl Drop for ActiveClaims {
+    fn drop(&mut self) {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        for id in &self.ids {
+            active.remove(id);
+        }
+    }
 }
 
 /// The stable id of `job` under `root`: a digest, so a duplicate merges.
@@ -159,6 +178,36 @@ async fn run_entry(engine: Arc<dyn MemoryEngine>, mut entry: QueuedJob) -> RunRe
     }
 }
 
+fn matches_selection(
+    entry: &QueuedJob,
+    selection: &Selection,
+    cutoff: chrono::DateTime<Utc>,
+) -> bool {
+    match selection {
+        Selection::Due => entry.queued_at <= cutoff,
+        Selection::All => true,
+        Selection::One(id) => &entry.id == id,
+    }
+}
+
+fn merge_entry(target: &mut QueuedJob, incoming: QueuedJob) {
+    target.attempts = target.attempts.max(incoming.attempts);
+    if incoming.queued_at < target.queued_at {
+        target.queued_at = incoming.queued_at;
+    }
+    if incoming.last_error.is_some() {
+        target.last_error = incoming.last_error;
+    }
+}
+
+fn merge_pending(state: &mut QueueState, entry: QueuedJob) {
+    if let Some(existing) = state.pending.iter_mut().find(|known| known.id == entry.id) {
+        merge_entry(existing, entry);
+    } else {
+        state.pending.push(entry);
+    }
+}
+
 impl<S: QueueStore> std::fmt::Debug for JobQueue<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("JobQueue").finish_non_exhaustive()
@@ -171,6 +220,7 @@ impl<S: QueueStore> JobQueue<S> {
         Self {
             store,
             lock: Mutex::new(()),
+            active: Arc::new(StdMutex::new(HashSet::new())),
         }
     }
 
@@ -345,7 +395,8 @@ impl<S: QueueStore> JobQueue<S> {
     ///
     /// # Errors
     /// [`QueueError::NoSuchJob`] when [`Selection::One`] names a job that is
-    /// not queued; the queue is left as it was.
+    /// not queued, or [`QueueError::Store`] when a claim or result cannot be
+    /// persisted; the queue is left recoverable.
     pub async fn run_with_concurrency(
         &self,
         engine: Arc<dyn MemoryEngine>,
@@ -353,25 +404,59 @@ impl<S: QueueStore> JobQueue<S> {
         build_delay_secs: u64,
         concurrency: usize,
     ) -> Result<Vec<JobRun>, QueueError> {
-        let take = {
+        let active = Arc::clone(&self.active);
+        let (take, _claims) = {
             let _guard = self.lock.lock().await;
             let mut state = self.store.load();
             let cutoff =
                 Utc::now() - Duration::seconds(i64::try_from(build_delay_secs).unwrap_or(0));
-            let (take, keep): (Vec<QueuedJob>, Vec<QueuedJob>) =
-                state.pending.drain(..).partition(|entry| match &selection {
-                    Selection::Due => entry.queued_at <= cutoff,
-                    Selection::All => true,
-                    Selection::One(id) => &entry.id == id,
-                });
-            state.pending = keep;
+            let active_ids = active.lock().unwrap_or_else(|error| error.into_inner());
+            let mut take = Vec::new();
+            let mut pending = Vec::new();
+            let mut in_flight = Vec::new();
+            for entry in state.in_flight.drain(..) {
+                if active_ids.contains(&entry.id) || !matches_selection(&entry, &selection, cutoff)
+                {
+                    in_flight.push(entry);
+                } else {
+                    take.push(entry);
+                }
+            }
+            for entry in state.pending.drain(..) {
+                if active_ids.contains(&entry.id) || !matches_selection(&entry, &selection, cutoff)
+                {
+                    pending.push(entry);
+                } else if let Some(existing) = take.iter_mut().find(|known| known.id == entry.id) {
+                    merge_entry(existing, entry);
+                } else {
+                    take.push(entry);
+                }
+            }
+            state.pending = pending;
+            state.in_flight = in_flight;
             if let Selection::One(id) = &selection
                 && take.is_empty()
             {
                 return Err(QueueError::NoSuchJob(id.clone()));
             }
-            self.write(&state);
-            take
+            state.in_flight.extend(take.iter().cloned());
+            self.store.save(&state).map_err(QueueError::Store)?;
+            let ids = take
+                .iter()
+                .map(|entry| entry.id.clone())
+                .collect::<Vec<_>>();
+            drop(active_ids);
+            active
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .extend(ids.iter().cloned());
+            (
+                take,
+                ActiveClaims {
+                    active: Arc::clone(&active),
+                    ids,
+                },
+            )
         };
 
         let results = stream::iter(
@@ -386,15 +471,12 @@ impl<S: QueueStore> JobQueue<S> {
         let mut state = self.store.load();
         let mut runs = Vec::with_capacity(results.len());
         for result in results {
-            if let Some(retry) = result.retry
-                && !state.pending.iter().any(|known| known.id == retry.id)
-            {
-                state.pending.push(retry);
+            state.in_flight.retain(|entry| entry.id != result.record.id);
+            if let Some(retry) = result.retry {
+                merge_pending(&mut state, retry);
             }
             for follow_up in result.follow_ups {
-                if !state.pending.iter().any(|known| known.id == follow_up.id) {
-                    state.pending.push(follow_up);
-                }
+                merge_pending(&mut state, follow_up);
             }
             runs.push(result.record);
         }
@@ -403,7 +485,7 @@ impl<S: QueueStore> JobQueue<S> {
         history.append(&mut state.history);
         history.truncate(MAX_HISTORY);
         state.history = history;
-        self.write(&state);
+        self.store.save(&state).map_err(QueueError::Store)?;
         Ok(runs)
     }
 }

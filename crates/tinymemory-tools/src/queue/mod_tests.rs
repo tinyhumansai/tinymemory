@@ -1,8 +1,13 @@
 use super::*;
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use crate::layout_migration::test_host::RefusingEngine;
+use async_trait::async_trait;
 use tinymemory_api::conformance::ReferenceEngine;
 use tinymemory_api::{ConsolidateRequest, ItemKind, Reach};
+use tokio::sync::Semaphore;
 
 fn build(agent: &str) -> BackgroundJob {
     BackgroundJob::BuildBeliefs {
@@ -194,4 +199,207 @@ async fn bounded_runner_processes_all_claimed_jobs() {
     assert_eq!(runs.len(), 2);
     assert!(queue.snapshot().await.pending.is_empty());
     assert_eq!(queue.snapshot().await.history.len(), 2);
+}
+
+struct GatedEngine {
+    inner: ReferenceEngine,
+    release: Arc<Semaphore>,
+    started: Arc<AtomicUsize>,
+    active: Arc<AtomicUsize>,
+    peak: Arc<AtomicUsize>,
+}
+
+impl GatedEngine {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            inner: ReferenceEngine::new(),
+            release: Arc::new(Semaphore::new(0)),
+            started: Arc::new(AtomicUsize::new(0)),
+            active: Arc::new(AtomicUsize::new(0)),
+            peak: Arc::new(AtomicUsize::new(0)),
+        })
+    }
+}
+
+#[async_trait]
+impl MemoryEngine for GatedEngine {
+    fn descriptor(&self) -> &tinymemory_api::EngineDescriptor {
+        self.inner.descriptor()
+    }
+
+    async fn health(&self) -> tinymemory_api::EngineHealth {
+        self.inner.health().await
+    }
+
+    async fn recall(
+        &self,
+        req: tinymemory_api::RecallRequest,
+    ) -> tinymemory_api::Result<tinymemory_api::RecallAnswer> {
+        self.inner.recall(req).await
+    }
+
+    async fn fetch(
+        &self,
+        req: tinymemory_api::FetchRequest,
+    ) -> tinymemory_api::Result<tinymemory_api::FetchPage> {
+        self.inner.fetch(req).await
+    }
+
+    async fn store(
+        &self,
+        item: tinymemory_api::StoreItem,
+    ) -> tinymemory_api::Result<tinymemory_api::StoreReceipt> {
+        self.inner.store(item).await
+    }
+
+    async fn forget(
+        &self,
+        target: tinymemory_api::ForgetTarget,
+    ) -> tinymemory_api::Result<tinymemory_api::ForgetReport> {
+        self.inner.forget(target).await
+    }
+
+    async fn list(
+        &self,
+        req: tinymemory_api::ListRequest,
+    ) -> tinymemory_api::Result<tinymemory_api::ListPage> {
+        self.inner.list(req).await
+    }
+
+    async fn consolidate(
+        &self,
+        _req: ConsolidateRequest,
+    ) -> tinymemory_api::Result<tinymemory_api::ConsolidateReceipt> {
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(active, Ordering::SeqCst);
+        self.started.fetch_add(1, Ordering::SeqCst);
+        let permit = self.release.acquire().await.unwrap();
+        permit.forget();
+        self.active.fetch_sub(1, Ordering::SeqCst);
+        Err(tinymemory_api::Error::Engine("test gate".into()))
+    }
+}
+
+#[tokio::test]
+async fn bounded_runner_limits_actual_engine_overlap() {
+    let queue = Arc::new(queue());
+    queue
+        .enqueue(&Namespace::ROOT, vec![build("a"), build("b"), build("c")])
+        .await;
+    let engine = GatedEngine::new();
+    let run_queue = Arc::clone(&queue);
+    let run_engine = Arc::clone(&engine);
+    let run = tokio::spawn(async move {
+        run_queue
+            .run_with_concurrency(run_engine, Selection::All, 0, 2)
+            .await
+    });
+
+    while engine.started.load(Ordering::SeqCst) < 2 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(engine.active.load(Ordering::SeqCst), 2);
+    assert_eq!(engine.peak.load(Ordering::SeqCst), 2);
+    assert_eq!(engine.started.load(Ordering::SeqCst), 2);
+
+    engine.release.add_permits(2);
+    while engine.started.load(Ordering::SeqCst) < 3 {
+        tokio::task::yield_now().await;
+    }
+    engine.release.add_permits(1);
+    run.await.unwrap().unwrap();
+    assert_eq!(engine.peak.load(Ordering::SeqCst), 2);
+}
+
+struct FailingStore {
+    state: std::sync::Mutex<QueueState>,
+}
+
+impl QueueStore for FailingStore {
+    fn load(&self) -> QueueState {
+        self.state.lock().unwrap().clone()
+    }
+
+    fn save(&self, _state: &QueueState) -> Result<(), String> {
+        Err("test save failure".into())
+    }
+}
+
+#[tokio::test]
+async fn claim_save_failure_starts_no_jobs() {
+    let entry = queued("root", build("a"));
+    let queue = JobQueue::new(FailingStore {
+        state: std::sync::Mutex::new(QueueState {
+            pending: vec![entry],
+            ..QueueState::default()
+        }),
+    });
+    let engine = GatedEngine::new();
+
+    assert!(matches!(
+        queue
+            .run_with_concurrency(engine.clone(), Selection::All, 0, 1)
+            .await,
+        Err(QueueError::Store(_))
+    ));
+    assert_eq!(engine.started.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn cancelled_claims_are_recovered() {
+    let queue = Arc::new(queue());
+    queue.enqueue(&Namespace::ROOT, vec![build("a")]).await;
+    let engine = GatedEngine::new();
+    let run_queue = Arc::clone(&queue);
+    let run_engine = Arc::clone(&engine);
+    let run = tokio::spawn(async move {
+        run_queue
+            .run_with_concurrency(run_engine, Selection::All, 0, 1)
+            .await
+    });
+    while engine.started.load(Ordering::SeqCst) < 1 {
+        tokio::task::yield_now().await;
+    }
+    run.abort();
+    let _ = run.await;
+    assert_eq!(queue.snapshot().await.in_flight.len(), 1);
+
+    let retry_engine = GatedEngine::new();
+    let retry_queue = Arc::clone(&queue);
+    let retry_engine_for_run = Arc::clone(&retry_engine);
+    let retry = tokio::spawn(async move {
+        retry_queue
+            .run_with_concurrency(retry_engine_for_run, Selection::All, 0, 1)
+            .await
+    });
+    while retry_engine.started.load(Ordering::SeqCst) < 1 {
+        tokio::task::yield_now().await;
+    }
+    retry_engine.release.add_permits(1);
+    retry.await.unwrap().unwrap();
+    assert!(queue.snapshot().await.in_flight.is_empty());
+}
+
+#[tokio::test]
+async fn retry_merge_preserves_attempts_when_requeued_while_running() {
+    let queue = Arc::new(queue());
+    queue.enqueue(&Namespace::ROOT, vec![build("a")]).await;
+    let engine = GatedEngine::new();
+    let run_queue = Arc::clone(&queue);
+    let run_engine = Arc::clone(&engine);
+    let run = tokio::spawn(async move {
+        run_queue
+            .run_with_concurrency(run_engine, Selection::All, 0, 1)
+            .await
+    });
+    while engine.started.load(Ordering::SeqCst) < 1 {
+        tokio::task::yield_now().await;
+    }
+    queue.enqueue(&Namespace::ROOT, vec![build("a")]).await;
+    engine.release.add_permits(1);
+    run.await.unwrap().unwrap();
+
+    let state = queue.snapshot().await;
+    assert_eq!(state.pending.len(), 1);
+    assert_eq!(state.pending[0].attempts, 1);
 }

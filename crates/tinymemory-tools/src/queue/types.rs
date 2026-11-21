@@ -62,6 +62,9 @@ pub struct QueueState {
     /// Jobs waiting to run.
     #[serde(default)]
     pub pending: Vec<QueuedJob>,
+    /// Jobs claimed by a runner but not yet acknowledged as complete.
+    #[serde(default)]
+    pub in_flight: Vec<QueuedJob>,
     /// The latest finished runs, newest first.
     #[serde(default)]
     pub history: Vec<JobRun>,
@@ -73,6 +76,9 @@ pub enum QueueError {
     /// [`Selection::One`] named a job that is not queued.
     #[error("no queued job `{0}`")]
     NoSuchJob(String),
+    /// The queue could not persist a claim or completed state.
+    #[error("queue storage failed: {0}")]
+    Store(String),
 }
 
 /// Which jobs a run takes.
